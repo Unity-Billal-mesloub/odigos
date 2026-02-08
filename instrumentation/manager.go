@@ -97,6 +97,10 @@ type ManagerOptions[processGroup ProcessGroup, configGroup ConfigGroup, processD
 
 	// MetricsMap is the optional common eBPF map that is used to read metrics per Java process at each interval.
 	MetricsMap *cilumebpf.Map
+
+	// MetricsAttributesMap is the optional eBPF Hash map for UUID -> packed resource attributes.
+	// Used alongside MetricsMap to store resource attributes separately from the metrics hash key.
+	MetricsAttributesMap *cilumebpf.Map
 }
 
 // Manager is used to orchestrate the ebpf instrumentations lifecycle.
@@ -134,8 +138,9 @@ type manager[processGroup ProcessGroup, configGroup ConfigGroup, processDetails 
 
 	metrics *managerMetrics
 
-	tracesMap  *cilumebpf.Map
-	metricsMap *cilumebpf.Map
+	tracesMap            *cilumebpf.Map
+	metricsMap           *cilumebpf.Map
+	metricsAttributesMap *cilumebpf.Map
 }
 
 func NewManager[processGroup ProcessGroup, configGroup ConfigGroup, processDetails ProcessDetails[processGroup, configGroup]](options ManagerOptions[processGroup, configGroup, processDetails]) (Manager, error) {
@@ -186,6 +191,7 @@ func NewManager[processGroup ProcessGroup, configGroup ConfigGroup, processDetai
 		metrics:               managerMetrics,
 		tracesMap:             options.TracesMap,
 		metricsMap:            options.MetricsMap,
+		metricsAttributesMap:  options.MetricsAttributesMap,
 	}, nil
 }
 
@@ -201,11 +207,10 @@ func (m *manager[ProcessGroup, ConfigGroup, ProcessDetails]) runEventLoop(ctx co
 				m.logger.Error(ctx.Err(), "context canceled while cleaning up instrumentations before shutdown")
 				return
 			default:
-				if details.inst == nil {
-					continue
-				}
-				if err := details.inst.Close(ctx); err != nil {
-					m.logger.Error(err, "failed to close instrumentation", "pid", pid)
+				if details.inst != nil {
+					if err := details.inst.Close(ctx); err != nil {
+						m.logger.Error(err, "failed to close instrumentation", "pid", pid)
+					}
 				}
 				if err := m.handler.Reporter.OnExit(ctx, pid, details.pd); err != nil {
 					m.logger.Error(err, "failed to report instrumentation exit")
@@ -300,7 +305,7 @@ func (m *manager[ProcessGroup, ConfigGroup, ProcessDetails]) handleInstrumentErr
 	// in cases where we detected a certain language for a container, but multiple processes are running in it,
 	// only one or some of them are in the language we detected.
 	if errors.Is(err, ErrProcessLanguageNotMatchesDistribution) {
-		m.logger.Info("process language does not match the detected language for container, skipping instrumentation", "error", err)
+		m.logger.V(1).Info("process language does not match the detected language for container, skipping instrumentation", "error", err)
 		return
 	}
 
@@ -330,8 +335,15 @@ func (m *manager[ProcessGroup, ConfigGroup, ProcessDetails]) Run(ctx context.Con
 			TracesFDProvider: func() int {
 				return m.tracesMap.FD()
 			},
-			MetricsFDProvider: func() int {
-				return m.metricsMap.FD()
+			MetricsFDsProvider: func() []int {
+				var fds []int
+				if m.metricsMap != nil {
+					fds = append(fds, m.metricsMap.FD())
+				}
+				if m.metricsAttributesMap != nil {
+					fds = append(fds, m.metricsAttributesMap.FD())
+				}
+				return fds
 			},
 		}
 
@@ -344,8 +356,7 @@ func (m *manager[ProcessGroup, ConfigGroup, ProcessDetails]) Run(ctx context.Con
 
 		m.logger.Info("eBPF maps created, FD server started",
 			"socket", unixfd.DefaultSocketPath,
-			"traces_map_fd", m.tracesMap.FD(),
-			"metrics_map_fd", m.metricsMap.FD())
+			"traces_map_fd", m.tracesMap.FD())
 		return nil
 	})
 
@@ -452,6 +463,7 @@ func (m *manager[ProcessGroup, ConfigGroup, ProcessDetails]) tryInstrument(ctx c
 
 	settings.MetricsMap = MetricsMap{
 		HashMapOfMaps: m.metricsMap,
+		AttributesMap: m.metricsAttributesMap,
 	}
 
 	inst, initErr := factory.CreateInstrumentation(ctx, pid, settings)

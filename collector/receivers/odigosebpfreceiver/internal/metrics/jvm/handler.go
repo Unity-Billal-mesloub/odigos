@@ -2,7 +2,6 @@ package jvm
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/cilium/ebpf"
@@ -21,10 +20,21 @@ const (
 	metricMemoryUsedAfterGC = semconv1_26.JvmMemoryUsedAfterLastGcName
 	metricClassesLoaded     = semconv1_26.JvmClassLoadedName
 	metricClassesUnloaded   = semconv1_26.JvmClassUnloadedName
+	metricClassesCount      = semconv1_26.JvmClassCountName
 	metricThreadCount       = semconv1_26.JvmThreadCountName
 	metricCPUTime           = semconv1_26.JvmCPUTimeName
 	metricCPUCount          = semconv1_26.JvmCPUCountName
 	metricCPUUtilization    = semconv1_26.JvmCPURecentUtilizationName
+
+	// New Relic metric names (process.runtime.jvm.* prefix) for multi-vendor compatibility
+	processRuntimeJVMMetricMemoryUsage     = "process.runtime.jvm.memory.usage"
+	processRuntimeJVMMetricMemoryCommitted = "process.runtime.jvm.memory.committed"
+	processRuntimeJVMMetricMemoryLimit     = "process.runtime.jvm.memory.limit"
+	processRuntimeJVMMetricMemoryMax       = "process.runtime.jvm.memory.max"
+
+	// Grafana metric names (jvm.classes.* prefix) for multi-vendor compatibility
+	grafanaMetricClassesLoaded   = "jvm.classes.loaded"
+	grafanaMetricClassesUnloaded = "jvm.classes.unloaded"
 
 	// OTel attribute keys
 	attrGCAction       = semconv1_26.JvmGcActionKey
@@ -37,6 +47,7 @@ const (
 	// Metric descriptions
 	descClassLoaded       = semconv1_26.JvmClassLoadedDescription
 	descClassUnloaded     = semconv1_26.JvmClassUnloadedDescription
+	descClassCount        = semconv1_26.JvmClassCountDescription
 	descMemoryUsed        = semconv1_26.JvmMemoryUsedDescription
 	descMemoryCommitted   = semconv1_26.JvmMemoryCommittedDescription
 	descMemoryLimit       = semconv1_26.JvmMemoryLimitDescription
@@ -60,8 +71,87 @@ func NewJVMMetricsHandler(logger *zap.Logger) *JVMMetricsHandler {
 	}
 }
 
-// ExtractJVMMetricsFromInnerMap extracts JVM metrics from a process inner map and converts them to OpenTelemetry format
-func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, innerMap *ebpf.Map, processKey [512]byte) (pmetric.Metrics, error) {
+// emitGaugeMetric is a helper that creates a gauge metric with the given parameters.
+func (h *JVMMetricsHandler) emitGaugeMetric(
+	scopeMetrics pmetric.ScopeMetrics,
+	name string,
+	description string,
+	unit string,
+	value int64,
+	attrSetter func(pcommon.Map),
+) {
+	if value == 0 {
+		return
+	}
+
+	metric := scopeMetrics.Metrics().AppendEmpty()
+	metric.SetName(name)
+	metric.SetDescription(description)
+	metric.SetUnit(unit)
+
+	gaugeMetric := metric.SetEmptyGauge()
+	dataPoint := gaugeMetric.DataPoints().AppendEmpty()
+	dataPoint.SetIntValue(value)
+	now := pcommon.NewTimestampFromTime(time.Now())
+	dataPoint.SetTimestamp(now)
+
+	if attrSetter != nil {
+		attrSetter(dataPoint.Attributes())
+	}
+}
+
+// emitHistogramMetric is a helper that creates a histogram metric with the given parameters.
+func (h *JVMMetricsHandler) emitHistogramMetric(
+	scopeMetrics pmetric.ScopeMetrics,
+	name string,
+	description string,
+	unit string,
+	hist HistogramValue,
+	startTime pcommon.Timestamp,
+	attrSetter func(pcommon.Map),
+) {
+	if hist.TotalCount == 0 {
+		return
+	}
+
+	metric := scopeMetrics.Metrics().AppendEmpty()
+	metric.SetName(name)
+	metric.SetDescription(description)
+	metric.SetUnit(unit)
+
+	histogramMetric := metric.SetEmptyHistogram()
+	histogramMetric.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
+
+	dataPoint := histogramMetric.DataPoints().AppendEmpty()
+	now := pcommon.NewTimestampFromTime(time.Now())
+	dataPoint.SetTimestamp(now)
+	dataPoint.SetStartTimestamp(startTime)
+
+	dataPoint.SetCount(uint64(hist.TotalCount))
+	dataPoint.SetSum(float64(hist.SumNs) / 1e9) // Convert nanoseconds to seconds
+
+	// OTLP bucket_counts are per-bucket (non-cumulative).
+	// The sum of bucket_counts must equal the Count field.
+	bucketBounds := []float64{0.001, 0.01, 0.1, 1.0}
+	bucketCounts := []uint64{
+		uint64(hist.Bucket1ms),
+		uint64(hist.Bucket10ms),
+		uint64(hist.Bucket100ms),
+		uint64(hist.Bucket1s),
+		uint64(hist.BucketInf),
+	}
+
+	dataPoint.ExplicitBounds().FromRaw(bucketBounds)
+	dataPoint.BucketCounts().FromRaw(bucketCounts)
+
+	if attrSetter != nil {
+		attrSetter(dataPoint.Attributes())
+	}
+}
+
+// ExtractJVMMetricsFromInnerMap extracts JVM metrics from a process inner map and converts them to OpenTelemetry format.
+// startTime is the timestamp when this process was first observed, used as StartTimestamp for cumulative metrics.
+func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, innerMap *ebpf.Map, startTime pcommon.Timestamp) (pmetric.Metrics, error) {
 	metrics := pmetric.NewMetrics()
 	resourceMetrics := metrics.ResourceMetrics().AppendEmpty()
 	scopeMetrics := resourceMetrics.ScopeMetrics().AppendEmpty()
@@ -89,9 +179,11 @@ func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, i
 
 		switch metricType {
 		case MetricClassLoaded:
-			h.addClassLoadedMetric(scopeMetrics, value.AsCounter())
+			h.addClassLoadedMetric(scopeMetrics, value.AsGauge())
 		case MetricClassUnloaded:
-			h.addClassUnloadedMetric(scopeMetrics, value.AsCounter())
+			h.addClassUnloadedMetric(scopeMetrics, value.AsGauge())
+		case MetricClassCount:
+			h.addClassCountMetric(scopeMetrics, value.AsGauge())
 
 		// Memory metrics - extract common attributes once
 		case MetricMemoryUsed, MetricMemoryCommitted, MetricMemoryLimit, MetricMemoryUsedAfterGC:
@@ -112,7 +204,7 @@ func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, i
 		case MetricGCDuration:
 			gcAction := GCAction(key.Attr1())
 			gcName := GCName(key.Attr2())
-			h.addGCHistogramMetric(scopeMetrics, value.AsHistogram(), gcAction, gcName)
+			h.addGCHistogramMetric(scopeMetrics, value.AsHistogram(), gcAction, gcName, startTime)
 		case MetricThreadCount:
 			daemon := ThreadDaemon(key.Attr1())
 			state := ThreadState(key.Attr2())
@@ -120,7 +212,7 @@ func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, i
 
 		// CPU metrics
 		case MetricCPUTime:
-			h.addCPUTimeMetric(scopeMetrics, value.AsCounter())
+			h.addCPUTimeMetric(scopeMetrics, value.AsCounter(), startTime)
 		case MetricCPUCount:
 			h.addCPUCountMetric(scopeMetrics, value.AsGauge())
 		case MetricCPURecentUtilization:
@@ -130,15 +222,6 @@ func (h *JVMMetricsHandler) ExtractJVMMetricsFromInnerMap(ctx context.Context, i
 		}
 
 		metricsAdded++
-
-		// Reset counters/histogram after read (delta reporting)
-		// Don't reset gauges - they represent current state
-		if !metricType.IsGauge() {
-			var zeroValue MetricValue
-			if err := innerMap.Update(&key, &zeroValue, ebpf.UpdateExist); err != nil {
-				h.logger.Debug("Failed to reset metric", zap.String("key", fmt.Sprintf("%d", key)), zap.Error(err))
-			}
-		}
 	}
 
 	h.logger.Debug("JVM metrics extraction completed",
@@ -179,40 +262,23 @@ func setGCAttributes(attrs pcommon.Map, gcAction GCAction, gcName GCName) {
 	}
 }
 
-func (h *JVMMetricsHandler) addClassLoadedMetric(scopeMetrics pmetric.ScopeMetrics, counter CounterValue) {
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricClassesLoaded)
-	metric.SetDescription(descClassLoaded)
-	metric.SetUnit(semconv1_26.JvmClassLoadedUnit)
-
-	sum := metric.SetEmptySum()
-	sum.SetIsMonotonic(true)
-	// Set cumulative temporality - values represent total since measurement started, not delta changes
-	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-
-	dataPoint := sum.DataPoints().AppendEmpty()
-	dataPoint.SetIntValue(int64(counter.Count))
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
-	dataPoint.SetStartTimestamp(now)
+func (h *JVMMetricsHandler) addClassLoadedMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue) {
+	h.emitGaugeMetric(scopeMetrics, metricClassesLoaded, descClassLoaded,
+		semconv1_26.JvmClassLoadedUnit, int64(gauge.Value), nil)
+	h.emitGaugeMetric(scopeMetrics, grafanaMetricClassesLoaded, descClassLoaded,
+		semconv1_26.JvmClassLoadedUnit, int64(gauge.Value), nil)
 }
 
-func (h *JVMMetricsHandler) addClassUnloadedMetric(scopeMetrics pmetric.ScopeMetrics, counter CounterValue) {
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricClassesUnloaded)
-	metric.SetDescription(descClassUnloaded)
-	metric.SetUnit(semconv1_26.JvmClassUnloadedUnit)
+func (h *JVMMetricsHandler) addClassUnloadedMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue) {
+	h.emitGaugeMetric(scopeMetrics, metricClassesUnloaded, descClassUnloaded,
+		semconv1_26.JvmClassUnloadedUnit, int64(gauge.Value), nil)
+	h.emitGaugeMetric(scopeMetrics, grafanaMetricClassesUnloaded, descClassUnloaded,
+		semconv1_26.JvmClassUnloadedUnit, int64(gauge.Value), nil)
+}
 
-	sum := metric.SetEmptySum()
-	sum.SetIsMonotonic(true)
-	// Set cumulative temporality - values represent total since measurement started, not delta changes
-	sum.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-
-	dataPoint := sum.DataPoints().AppendEmpty()
-	dataPoint.SetIntValue(int64(counter.Count))
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
-	dataPoint.SetStartTimestamp(now)
+func (h *JVMMetricsHandler) addClassCountMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue) {
+	h.emitGaugeMetric(scopeMetrics, metricClassesCount, descClassCount,
+		semconv1_26.JvmClassCountUnit, int64(gauge.Value), nil)
 }
 
 func (h *JVMMetricsHandler) addMemoryUsedMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue, memType MemoryType, poolName MemoryPoolName) {
@@ -220,18 +286,13 @@ func (h *JVMMetricsHandler) addMemoryUsedMetric(scopeMetrics pmetric.ScopeMetric
 		return
 	}
 
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricMemoryUsed)
-	metric.SetDescription(descMemoryUsed)
-	metric.SetUnit(semconv1_26.JvmMemoryUsedUnit)
+	attrSetter := func(attrs pcommon.Map) {
+		setMemoryAttributes(attrs, memType, poolName)
+	}
 
-	gaugeMetric := metric.SetEmptyGauge()
-	dataPoint := gaugeMetric.DataPoints().AppendEmpty()
-	dataPoint.SetIntValue(int64(gauge.Value))
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
+	h.emitGaugeMetric(scopeMetrics, metricMemoryUsed, descMemoryUsed, semconv1_26.JvmMemoryUsedUnit, int64(gauge.Value), attrSetter)
 
-	setMemoryAttributes(dataPoint.Attributes(), memType, poolName)
+	h.emitGaugeMetric(scopeMetrics, processRuntimeJVMMetricMemoryUsage, descMemoryUsed, semconv1_26.JvmMemoryUsedUnit, int64(gauge.Value), attrSetter)
 }
 
 func (h *JVMMetricsHandler) addMemoryCommittedMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue, memType MemoryType, poolName MemoryPoolName) {
@@ -239,18 +300,13 @@ func (h *JVMMetricsHandler) addMemoryCommittedMetric(scopeMetrics pmetric.ScopeM
 		return
 	}
 
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricMemoryCommitted)
-	metric.SetDescription(descMemoryCommitted)
-	metric.SetUnit(semconv1_26.JvmMemoryCommittedUnit)
+	attrSetter := func(attrs pcommon.Map) {
+		setMemoryAttributes(attrs, memType, poolName)
+	}
 
-	gaugeMetric := metric.SetEmptyGauge()
-	dataPoint := gaugeMetric.DataPoints().AppendEmpty()
-	dataPoint.SetIntValue(int64(gauge.Value))
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
+	h.emitGaugeMetric(scopeMetrics, metricMemoryCommitted, descMemoryCommitted, semconv1_26.JvmMemoryCommittedUnit, int64(gauge.Value), attrSetter)
 
-	setMemoryAttributes(dataPoint.Attributes(), memType, poolName)
+	h.emitGaugeMetric(scopeMetrics, processRuntimeJVMMetricMemoryCommitted, descMemoryCommitted, semconv1_26.JvmMemoryCommittedUnit, int64(gauge.Value), attrSetter)
 }
 
 func (h *JVMMetricsHandler) addMemoryLimitMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue, memType MemoryType, poolName MemoryPoolName) {
@@ -258,18 +314,14 @@ func (h *JVMMetricsHandler) addMemoryLimitMetric(scopeMetrics pmetric.ScopeMetri
 		return
 	}
 
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricMemoryLimit)
-	metric.SetDescription(descMemoryLimit)
-	metric.SetUnit(semconv1_26.JvmMemoryLimitUnit)
+	attrSetter := func(attrs pcommon.Map) {
+		setMemoryAttributes(attrs, memType, poolName)
+	}
 
-	gaugeMetric := metric.SetEmptyGauge()
-	dataPoint := gaugeMetric.DataPoints().AppendEmpty()
-	dataPoint.SetIntValue(int64(gauge.Value))
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
+	h.emitGaugeMetric(scopeMetrics, metricMemoryLimit, descMemoryLimit, semconv1_26.JvmMemoryLimitUnit, int64(gauge.Value), attrSetter)
 
-	setMemoryAttributes(dataPoint.Attributes(), memType, poolName)
+	h.emitGaugeMetric(scopeMetrics, processRuntimeJVMMetricMemoryLimit, descMemoryLimit, semconv1_26.JvmMemoryLimitUnit, int64(gauge.Value), attrSetter)
+	h.emitGaugeMetric(scopeMetrics, processRuntimeJVMMetricMemoryMax, descMemoryLimit, semconv1_26.JvmMemoryLimitUnit, int64(gauge.Value), attrSetter)
 }
 
 func (h *JVMMetricsHandler) addMemoryUsedAfterGCMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue, memType MemoryType, poolName MemoryPoolName) {
@@ -306,40 +358,12 @@ func (h *JVMMetricsHandler) addThreadCountMetric(scopeMetrics pmetric.ScopeMetri
 	setThreadAttributes(dataPoint.Attributes(), daemon, state)
 }
 
-func (h *JVMMetricsHandler) addGCHistogramMetric(scopeMetrics pmetric.ScopeMetrics, hist HistogramValue, gcAction GCAction, gcName GCName) {
-	metric := scopeMetrics.Metrics().AppendEmpty()
-	metric.SetName(metricGCDuration)
-	metric.SetDescription(descGCDuration)
-	metric.SetUnit(semconv1_26.JvmGcDurationUnit)
-
-	histogramMetric := metric.SetEmptyHistogram()
-	// Set cumulative temporality - histogram represents total observations since measurement started
-	histogramMetric.SetAggregationTemporality(pmetric.AggregationTemporalityCumulative)
-
-	dataPoint := histogramMetric.DataPoints().AppendEmpty()
-	now := pcommon.NewTimestampFromTime(time.Now())
-	dataPoint.SetTimestamp(now)
-	dataPoint.SetStartTimestamp(now)
-
-	// Set count and sum
-	dataPoint.SetCount(uint64(hist.TotalCount))
-	dataPoint.SetSum(float64(hist.SumNs) / 1e9) // Convert nanoseconds to seconds
-
-	// Set bucket boundaries (in seconds) and counts
-	// Bucket boundaries: 0.001s, 0.01s, 0.1s, 1.0s, +Inf
-	bucketBounds := []float64{0.001, 0.01, 0.1, 1.0}
-	bucketCounts := []uint64{
-		uint64(hist.Bucket1ms),
-		uint64(hist.Bucket1ms + hist.Bucket10ms),
-		uint64(hist.Bucket1ms + hist.Bucket10ms + hist.Bucket100ms),
-		uint64(hist.Bucket1ms + hist.Bucket10ms + hist.Bucket100ms + hist.Bucket1s),
-		uint64(hist.TotalCount), // Total includes all buckets
+func (h *JVMMetricsHandler) addGCHistogramMetric(scopeMetrics pmetric.ScopeMetrics, hist HistogramValue, gcAction GCAction, gcName GCName, startTime pcommon.Timestamp) {
+	attrSetter := func(attrs pcommon.Map) {
+		setGCAttributes(attrs, gcAction, gcName)
 	}
 
-	dataPoint.ExplicitBounds().FromRaw(bucketBounds)
-	dataPoint.BucketCounts().FromRaw(bucketCounts)
-
-	setGCAttributes(dataPoint.Attributes(), gcAction, gcName)
+	h.emitHistogramMetric(scopeMetrics, metricGCDuration, descGCDuration, semconv1_26.JvmGcDurationUnit, hist, startTime, attrSetter)
 
 	h.logger.Debug("GC histogram recorded",
 		zap.Uint32("total_count", hist.TotalCount),
@@ -349,7 +373,7 @@ func (h *JVMMetricsHandler) addGCHistogramMetric(scopeMetrics pmetric.ScopeMetri
 	)
 }
 
-func (h *JVMMetricsHandler) addCPUTimeMetric(scopeMetrics pmetric.ScopeMetrics, counter CounterValue) {
+func (h *JVMMetricsHandler) addCPUTimeMetric(scopeMetrics pmetric.ScopeMetrics, counter CounterValue, startTime pcommon.Timestamp) {
 	if counter.Count == 0 {
 		return
 	}
@@ -368,7 +392,7 @@ func (h *JVMMetricsHandler) addCPUTimeMetric(scopeMetrics pmetric.ScopeMetrics, 
 	dataPoint.SetDoubleValue(seconds)
 	now := pcommon.NewTimestampFromTime(time.Now())
 	dataPoint.SetTimestamp(now)
-	dataPoint.SetStartTimestamp(now)
+	dataPoint.SetStartTimestamp(startTime)
 }
 
 func (h *JVMMetricsHandler) addCPUCountMetric(scopeMetrics pmetric.ScopeMetrics, gauge GaugeValue) {
@@ -396,7 +420,7 @@ func (h *JVMMetricsHandler) addCPUUtilizationMetric(scopeMetrics pmetric.ScopeMe
 
 	gaugeMetric := metric.SetEmptyGauge()
 	dataPoint := gaugeMetric.DataPoints().AppendEmpty()
-	utilization := float64(gauge.Value) / 10000.0
+	utilization := float64(gauge.Value) / 1e7 // normalize values as they were scaled up to store float values as uint in ebpf maps
 	dataPoint.SetDoubleValue(utilization)
 	now := pcommon.NewTimestampFromTime(time.Now())
 	dataPoint.SetTimestamp(now)

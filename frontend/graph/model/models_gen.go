@@ -74,10 +74,11 @@ type AgentsInitContainerResourcesConfig struct {
 }
 
 type APIToken struct {
-	Token     string `json:"token"`
-	Name      string `json:"name"`
-	IssuedAt  int    `json:"issuedAt"`
-	ExpiresAt int    `json:"expiresAt"`
+	Token     string  `json:"token"`
+	Name      string  `json:"name"`
+	IssuedAt  int     `json:"issuedAt"`
+	ExpiresAt int     `json:"expiresAt"`
+	Message   *string `json:"message,omitempty"`
 }
 
 type AttributeFilters struct {
@@ -620,18 +621,17 @@ type K8sActualNamespace struct {
 }
 
 type K8sActualSource struct {
-	Namespace                  string                  `json:"namespace"`
-	Name                       string                  `json:"name"`
-	Kind                       K8sResourceKind         `json:"kind"`
-	DataStreamNames            []*string               `json:"dataStreamNames"`
-	NumberOfInstances          *int                    `json:"numberOfInstances,omitempty"`
-	Selected                   *bool                   `json:"selected,omitempty"`
-	OtelServiceName            *string                 `json:"otelServiceName,omitempty"`
-	Containers                 []*SourceContainer      `json:"containers,omitempty"`
-	Conditions                 []*Condition            `json:"conditions,omitempty"`
-	WorkloadOdigosHealthStatus *DesiredConditionStatus `json:"workloadOdigosHealthStatus,omitempty"`
-	ManifestYaml               *string                 `json:"manifestYAML,omitempty"`
-	InstrumentationConfigYaml  *string                 `json:"instrumentationConfigYAML,omitempty"`
+	Namespace                 string             `json:"namespace"`
+	Name                      string             `json:"name"`
+	Kind                      K8sResourceKind    `json:"kind"`
+	DataStreamNames           []*string          `json:"dataStreamNames"`
+	NumberOfInstances         *int               `json:"numberOfInstances,omitempty"`
+	Selected                  *bool              `json:"selected,omitempty"`
+	OtelServiceName           *string            `json:"otelServiceName,omitempty"`
+	Containers                []*SourceContainer `json:"containers,omitempty"`
+	Conditions                []*Condition       `json:"conditions,omitempty"`
+	ManifestYaml              *string            `json:"manifestYAML,omitempty"`
+	InstrumentationConfigYaml *string            `json:"instrumentationConfigYAML,omitempty"`
 }
 
 type K8sAnnotationAttribute struct {
@@ -2150,25 +2150,19 @@ type SignalType string
 
 const (
 	SignalTypeTraces  SignalType = "TRACES"
-	SignalTypetraces  SignalType = "traces"
 	SignalTypeMetrics SignalType = "METRICS"
-	SignalTypemetrics SignalType = "metrics"
 	SignalTypeLogs    SignalType = "LOGS"
-	SignalTypelogs    SignalType = "logs"
 )
 
 var AllSignalType = []SignalType{
 	SignalTypeTraces,
-	SignalTypetraces,
 	SignalTypeMetrics,
-	SignalTypemetrics,
 	SignalTypeLogs,
-	SignalTypelogs,
 }
 
 func (e SignalType) IsValid() bool {
 	switch e {
-	case SignalTypeTraces, SignalTypetraces, SignalTypeMetrics, SignalTypemetrics, SignalTypeLogs, SignalTypelogs:
+	case SignalTypeTraces, SignalTypeMetrics, SignalTypeLogs:
 		return true
 	}
 	return false
