@@ -1,4 +1,4 @@
-ARG ODIGLET_BASE_IMAGE=registry.odigos.io/odiglet-base:v1.10
+ARG ODIGLET_BASE_IMAGE=registry.odigos.io/odiglet-base:v1.11
 
 
 ######### python Native Community Agent #########
@@ -79,10 +79,10 @@ COPY --from=public.ecr.aws/odigos/agents/nodejs-community:v0.0.8 /instrumentatio
 COPY --from=dotnet-builder /dotnet-instrumentation /instrumentations/dotnet
 
 # PHP
-COPY --from=public.ecr.aws/odigos/agents/php-community:v0.2.5 /instrumentations/php /instrumentations/php
+COPY --from=public.ecr.aws/odigos/agents/php-community:v0.2.6 /instrumentations/php /instrumentations/php
 
 # Ruby
-COPY --from=public.ecr.aws/odigos/agents/ruby-community:v0.0.7 /instrumentations/ruby /instrumentations/ruby
+COPY --from=public.ecr.aws/odigos/agents/ruby-community:v0.0.8 /instrumentations/ruby /instrumentations/ruby
 
 # loader
 ARG ODIGOS_LOADER_VERSION=v0.0.6

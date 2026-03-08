@@ -1,6 +1,8 @@
-ARG ODIGLET_BASE_IMAGE=registry.odigos.io/odiglet-base:v1.10
+ARG ODIGLET_BASE_IMAGE=registry.odigos.io/odiglet-base:v1.11
 
 ######### python Native Community Agent #########
+# IMPORTANT: If changing the Python version below, update the Python dependency shared object filenames
+# in odiglet/pkg/instrumentation/fs/agents.go (e.g., cpython-311 must match the Python version).
 FROM python:3.11.9 AS python-builder
 ARG ODIGOS_VERSION
 WORKDIR /python-instrumentation
@@ -58,10 +60,10 @@ COPY --from=public.ecr.aws/odigos/agents/nodejs-community:v0.0.8 /instrumentatio
 COPY --from=dotnet-builder /dotnet-instrumentation /instrumentations/dotnet
 
 # PHP
-COPY --from=public.ecr.aws/odigos/agents/php-community:v0.2.5 /instrumentations/php /instrumentations/php
+COPY --from=public.ecr.aws/odigos/agents/php-community:v0.2.6 /instrumentations/php /instrumentations/php
 
 # Ruby
-COPY --from=public.ecr.aws/odigos/agents/ruby-community:v0.0.7 /instrumentations/ruby /instrumentations/ruby
+COPY --from=public.ecr.aws/odigos/agents/ruby-community:v0.0.8 /instrumentations/ruby /instrumentations/ruby
 
 # loader
 ARG TARGETARCH

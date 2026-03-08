@@ -19,6 +19,7 @@ import (
 	odgiosK8s "github.com/odigos-io/odigos/k8sutils/pkg/conditions"
 	"github.com/odigos-io/odigos/k8sutils/pkg/env"
 	"github.com/odigos-io/odigos/k8sutils/pkg/workload"
+	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -83,6 +84,15 @@ func addSelfTelemetryPipeline(c *config.Config, ownTelemetryPort int32, destinat
 			},
 		},
 	}
+	c.Processors["resource/odigos-collector-role"] = config.GenericMap{
+		"attributes": []config.GenericMap{
+			{
+				"key":    "odigos.collector.role",
+				"value":  string(k8sconsts.CollectorsRoleClusterGateway),
+				"action": "upsert",
+			},
+		},
+	}
 	// odigostrafficmetrics processor should be the last processor in the pipeline
 	// as it helps to calculate the size of the data being exported.
 	// In case of performance impact caused by this processor, we should modify this config to reduce the sampling ratio.
@@ -98,23 +108,29 @@ func addSelfTelemetryPipeline(c *config.Config, ownTelemetryPort int32, destinat
 	}
 	c.Service.Pipelines["metrics/otelcol"] = config.Pipeline{
 		Receivers:  []string{"prometheus/self-metrics"},
-		Processors: []string{"resource/pod-name"},
+		Processors: []string{"resource/pod-name", "resource/odigos-collector-role"},
 		Exporters:  []string{"otlp/odigos-own-telemetry-ui"},
 	}
 
-	c.Service.Telemetry.Metrics = config.MetricsConfig{
-		Level: "detailed",
-		Readers: []config.GenericMap{
-			{
-				"pull": config.GenericMap{
-					"exporter": config.GenericMap{
-						"prometheus": config.GenericMap{
-							"host": "0.0.0.0",
-							"port": ownTelemetryPort,
+	podNameFromEnv := "${POD_NAME}"
+	c.Service.Telemetry = config.Telemetry{
+		Metrics: config.MetricsConfig{
+			Level: "detailed",
+			Readers: []config.GenericMap{
+				{
+					"pull": config.GenericMap{
+						"exporter": config.GenericMap{
+							"prometheus": config.GenericMap{
+								"host": "0.0.0.0",
+								"port": ownTelemetryPort,
+							},
 						},
 					},
 				},
 			},
+		},
+		Resource: map[string]*string{
+			string(semconv.K8SPodNameKey): &podNameFromEnv,
 		},
 	}
 
@@ -141,17 +157,43 @@ func syncConfigMap(enabledDests *odigosv1.DestinationList, allProcessors *odigos
 
 	processors := common.FilterAndSortProcessorsByOrderHint(allProcessors, odigosv1.CollectorsGroupRoleClusterGateway)
 
+	odigosConfigExtensionName := k8sconsts.OdigosConfigK8sExtensionType
 	gatewayOptions := pipelinegen.GatewayConfigOptions{
-		ServiceGraphDisabled:  gateway.Spec.ServiceGraphDisabled,
-		ClusterMetricsEnabled: gateway.Spec.ClusterMetricsEnabled,
-		OdigosNamespace:       env.GetCurrentNamespace(),
+		ServiceGraphDisabled:      gateway.Spec.ServiceGraphDisabled,
+		ClusterMetricsEnabled:     gateway.Spec.ClusterMetricsEnabled,
+		OdigosNamespace:           env.GetCurrentNamespace(),
+		OdigosConfigExtensionName: &odigosConfigExtensionName,
+	}
+
+	// TailSampling is nil when inactive, non-nil when the scheduler has resolved it as active.
+	// TraceAggregationWaitDuration is already validated and defaulted by the scheduler.
+	if gateway.Spec.TailSampling != nil {
+		if gateway.Spec.TailSampling.Disabled != nil {
+			disabled := *gateway.Spec.TailSampling.Disabled
+			enabled := !disabled
+			gatewayOptions.SamplingEnabled = &enabled
+		}
+		gatewayOptions.TraceAggregationWaitDuration = gateway.Spec.TailSampling.TraceAggregationWaitDuration
 	}
 
 	desiredData, err, status, signals := pipelinegen.GetGatewayConfig(
 		common.ToExporterConfigurerArray(enabledDests),
 		common.ToProcessorConfigurerArray(processors),
 		func(c *config.Config, destinationPipelineNames []string, signalsRootPipelines []string) error {
-			return addSelfTelemetryPipeline(c, gateway.Spec.CollectorOwnMetricsPort, destinationPipelineNames, signalsRootPipelines)
+			// Creating a metric pipeline (throughput metrics) for the gateway to be sent to the UI
+			if err := addSelfTelemetryPipeline(c, gateway.Spec.CollectorOwnMetricsPort, destinationPipelineNames, signalsRootPipelines); err != nil {
+				return err
+			}
+			// Creating a metric pipeline for the incoming Odigos components metrics
+			if gateway.Spec.Metrics != nil && gateway.Spec.Metrics.OdigosOwnMetrics != nil {
+				ownMetricsConfig := gateway.Spec.Metrics.OdigosOwnMetrics
+				if ownMetricsConfig.SendToMetricsDestinations || ownMetricsConfig.SendToOdigosMetricsStore {
+					if err := addOwnMetricsPipeline(c, ownMetricsConfig, env.GetCurrentNamespace(), gateway.Spec.CollectorOwnMetricsPort, destinationPipelineNames); err != nil {
+						return err
+					}
+				}
+			}
+			return nil
 		},
 		dataStreams, gatewayOptions,
 	)

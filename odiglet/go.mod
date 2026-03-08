@@ -1,12 +1,11 @@
 module github.com/odigos-io/odigos/odiglet
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/cilium/ebpf v0.19.1-0.20250815145053-c9de60689836
 	github.com/go-logr/logr v1.4.3
 	github.com/go-logr/zapr v1.3.0
-	github.com/moby/sys/mountinfo v0.7.2
 	github.com/odigos-io/odigos/api v0.0.0
 	github.com/odigos-io/odigos/common v0.0.0
 	github.com/odigos-io/odigos/distros v0.0.0
@@ -15,7 +14,7 @@ require (
 	github.com/odigos-io/odigos/opampserver v0.0.0-00010101000000-000000000000
 	github.com/odigos-io/odigos/procdiscovery v0.0.0-00010101000000-000000000000
 	github.com/odigos-io/opentelemetry-zap-bridge v0.0.5
-	github.com/odigos-io/runtime-detector v0.0.22
+	github.com/odigos-io/runtime-detector v0.0.24
 	go.opentelemetry.io/auto v0.21.0
 	go.opentelemetry.io/otel v1.38.0
 	go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc v1.38.0
@@ -23,7 +22,7 @@ require (
 	go.opentelemetry.io/otel/sdk v1.38.0
 	go.uber.org/zap v1.27.1
 	golang.org/x/sync v0.18.0
-	golang.org/x/sys v0.38.0
+	golang.org/x/sys v0.40.0
 	k8s.io/api v0.34.2
 	k8s.io/apimachinery v0.34.2
 	k8s.io/client-go v0.34.2

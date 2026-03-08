@@ -10,6 +10,7 @@ import (
 	"github.com/odigos-io/odigos/common/config"
 
 	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/component/componenttest"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/xconfmap"
 	"go.opentelemetry.io/collector/exporter"
@@ -164,8 +165,10 @@ func TestConnection(ctx context.Context, dest config.ExporterConfigurer) TestCon
 	defaultConfig := factory.CreateDefaultConfig()
 	connectionTester.ModifyConfigForConnectionTest(defaultConfig)
 
-	// convert the user provided fields to a collector config
-	exportersConf := confmap.NewFromStringMap(exporterRawConfig)
+	// convert the user provided fields to a collector config.
+	// normalizeMap converts named map types (like config.GenericMap) to plain map[string]any,
+	// which is required for confmap's decoder hooks to properly handle type assertions.
+	exportersConf := confmap.NewFromStringMap(normalizeMap(exporterRawConfig))
 	if exportersConf == nil {
 		return TestConnectionResult{Succeeded: false, Message: "failed to create exporter config", Reason: InvalidConfig, DestinationType: destType, StatusCode: http.StatusInternalServerError}
 	}
@@ -189,7 +192,7 @@ func TestConnection(ctx context.Context, dest config.ExporterConfigurer) TestCon
 		return TestConnectionResult{Succeeded: false, Message: handleError(err), Reason: InvalidConfig, DestinationType: destType, StatusCode: http.StatusInternalServerError}
 	}
 
-	err = exporter.Start(ctx, nil)
+	err = exporter.Start(ctx, componenttest.NewNopHost())
 	if err != nil {
 		return TestConnectionResult{Succeeded: false, Message: handleError(err), Reason: FailedToConnect, DestinationType: destType, StatusCode: http.StatusInternalServerError}
 	}

@@ -4,7 +4,7 @@ metadata:
   labels:
     app.kubernetes.io/name: odigos-instrumentor
     odigos.io/system-object: "true"
-  name: odigos-instrumentor
+  name: {{ .Values.instrumentor.deploymentName | default "odigos-instrumentor" }}
   namespace: {{ .Release.Namespace }}
 spec:
   replicas: 2
@@ -58,6 +58,11 @@ spec:
         command:
           - /app
         {{ $imageTag := .Values.image.tag | default .Chart.AppVersion }}
+        {{- $extendedSuffix := "" -}}
+        {{- if and .Values.odiglet.extended (include "odigos.secretExists" .) -}}
+          {{- $extendedSuffix = "-extended" -}}
+        {{- end -}}
+        {{- $agentsImageTag := printf "%s%s" $imageTag $extendedSuffix -}}
         {{- if include "odigos.secretExists" . }}
         image: {{ template "utils.imageName" (dict "Values" .Values "Component" "enterprise-instrumentor" "Tag" $imageTag) }}
         {{- else }}
@@ -68,6 +73,10 @@ spec:
             name: webhook-server
             protocol: TCP
         env:
+          {{- if .Values.instrumentor.deploymentName }}
+          - name: ODIGOS_COMPONENT_DEPLOYMENT_NAME
+            value: {{ .Values.instrumentor.deploymentName | quote }}
+          {{- end }}
           - name: OTEL_SERVICE_NAME
             value: instrumentor
           - name: CURRENT_NS
@@ -93,7 +102,7 @@ spec:
           {{- end }}
           - name: ODIGOS_INIT_CONTAINER_IMAGE
             {{- if include "odigos.secretExists" . }}
-            value: {{ template "utils.imageName" (dict "Values" .Values "Component" "enterprise-agents" "Tag" $imageTag) }}
+            value: {{ template "utils.imageName" (dict "Values" .Values "Component" "enterprise-agents" "Tag" $agentsImageTag) }}
             {{- else }}
             value: {{ template "utils.imageName" (dict "Values" .Values "Component" "agents" "Tag" $imageTag) }}
             {{- end }}

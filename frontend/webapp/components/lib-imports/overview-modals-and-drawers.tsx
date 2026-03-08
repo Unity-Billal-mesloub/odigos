@@ -14,21 +14,21 @@ import {
 } from '@/hooks';
 
 const OverviewModalsAndDrawers = () => {
-  const { fetchNamespace } = useNamespace();
+  const { fetchNamespacesWithWorkloads } = useNamespace();
   const { fetchDescribeSource } = useDescribe();
   const { testConnection } = useTestConnection();
   const { categories } = useDestinationCategories();
-  const { restartWorkloads, restartPod } = useWorkloadUtils();
+  const { restartWorkloads, restartPod, recoverFromRollback } = useWorkloadUtils();
   const { potentialDestinations } = usePotentialDestinations();
   const { createAction, updateAction, deleteAction } = useActionCRUD();
-  const { persistSources, updateSource, fetchSourceById, fetchSourceLibraries } = useSourceCRUD();
+  const { persistSources, updateSource, fetchSourceById, fetchSourceLibraries, fetchPeerSources } = useSourceCRUD();
   const { createDestination, updateDestination, deleteDestination } = useDestinationCRUD();
   const { createInstrumentationRule, updateInstrumentationRule, deleteInstrumentationRule } = useInstrumentationRuleCRUD();
 
   return (
     <>
       {/* modals */}
-      <SourceModal fetchSingleNamespace={fetchNamespace} persistSources={persistSources} />
+      <SourceModal fetchNamespacesWithWorkloads={fetchNamespacesWithWorkloads} persistSources={persistSources} />
       <DestinationModal
         isOnboarding={false}
         categories={categories}
@@ -46,10 +46,12 @@ const OverviewModalsAndDrawers = () => {
         persistSources={persistSources}
         restartWorkloads={restartWorkloads}
         restartPod={restartPod}
+        recoverFromRollback={recoverFromRollback}
         updateSource={updateSource}
         fetchSourceById={fetchSourceById}
         fetchSourceDescribe={fetchDescribeSource}
         fetchSourceLibraries={fetchSourceLibraries}
+        fetchPeerSources={fetchPeerSources}
       />
       <DestinationDrawer categories={categories} updateDestination={updateDestination} deleteDestination={deleteDestination} testConnection={testConnection} />
       <InstrumentationRuleDrawer updateInstrumentationRule={updateInstrumentationRule} deleteInstrumentationRule={deleteInstrumentationRule} />

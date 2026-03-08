@@ -18,6 +18,7 @@ limitations under the License.
 package v1alpha1
 
 import (
+	api "github.com/odigos-io/odigos/common/api"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,6 +29,7 @@ type InstrumentationConfigSpecApplyConfiguration struct {
 	AgentInjectionEnabled        *bool                                    `json:"agentInjectionEnabled,omitempty"`
 	PodManifestInjectionOptional *bool                                    `json:"podManifestInjectionOptional,omitempty"`
 	Containers                   []ContainerAgentConfigApplyConfiguration `json:"containers,omitempty"`
+	WorkloadCollectorConfig      []api.ContainerCollectorConfig           `json:"workloadCollectorConfig,omitempty"`
 	ContainersOverrides          []ContainerOverrideApplyConfiguration    `json:"containersOverrides,omitempty"`
 	ContainerOverridesHash       *string                                  `json:"containerOverridesHash,omitempty"`
 	AgentsMetaHash               *string                                  `json:"agentsMetaHash,omitempty"`
@@ -74,6 +76,16 @@ func (b *InstrumentationConfigSpecApplyConfiguration) WithContainers(values ...*
 			panic("nil value passed to WithContainers")
 		}
 		b.Containers = append(b.Containers, *values[i])
+	}
+	return b
+}
+
+// WithWorkloadCollectorConfig adds the given value to the WorkloadCollectorConfig field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the WorkloadCollectorConfig field.
+func (b *InstrumentationConfigSpecApplyConfiguration) WithWorkloadCollectorConfig(values ...api.ContainerCollectorConfig) *InstrumentationConfigSpecApplyConfiguration {
+	for i := range values {
+		b.WorkloadCollectorConfig = append(b.WorkloadCollectorConfig, values[i])
 	}
 	return b
 }

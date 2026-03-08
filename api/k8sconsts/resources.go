@@ -23,6 +23,21 @@ const (
 	// the name of the profile that created them.
 	OdigosProfileAnnotation = "odigos.io/profile"
 
+	// RollbackRecoveryAtAnnotation is set on a Source to request recovery from a rollback.
+	// The sourceinstrumentation controller copies it to the InstrumentationConfig annotation.
+	// The rollout controller compares it with RollbackRecoveryProcessedAtAnnotation to decide
+	// whether recovery is needed.
+	RollbackRecoveryAtAnnotation = "odigos.io/rollback-recovery"
+
+	// RollbackRecoveryProcessedAtAnnotation is set on InstrumentationConfig by the rollout
+	// controller to record the last recovery timestamp that was processed. When this matches
+	// RollbackRecoveryAtAnnotation on the same IC, the recovery has been handled.
+	RollbackRecoveryProcessedAtAnnotation = "odigos.io/rollback-recovery-processed"
+
+	// this label is not used in the api server, it is injected only into the controller-runtime cache object,
+	// and allows efficient listing of static pods based on the label.
+	OdigosVirtualStaticPodNameLabel = "odigos.io/virtual-static-pod-name"
+
 	// This label is used to mark resources that are managed by Helm.
 	AppManagedByHelmLabel = "app.kubernetes.io/managed-by"
 	AppManagedByHelmValue = "Helm"

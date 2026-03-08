@@ -7,7 +7,7 @@ ORG ?= registry.odigos.io
 ifeq ($(STAGING_ORG),true)
     ORG = us-central1-docker.pkg.dev/odigos-cloud/staging-components
 endif
-GOLANGCI_LINT_VERSION ?= v2.5.0
+GOLANGCI_LINT_VERSION ?= v2.10.1
 GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 GO_MODULES := $(shell find . -type f -name "go.mod" -not -path "*/vendor/*" -exec dirname {} \; | grep -v "licenses")
 LINT_CMD = golangci-lint run -c ../.golangci.yml
@@ -86,6 +86,22 @@ cli-docs:
 .PHONY: rbac-docs
 rbac-docs:
 	cd scripts/rbac-docgen && go run main.go
+
+TOOLS_DIR := .tools
+HELM_SCHEMA_VERSION := latest
+HELM_SCHEMA_BIN := $(TOOLS_DIR)/helm-schema
+
+.PHONY: helm-schema
+helm-schema: $(HELM_SCHEMA_BIN)
+	cd helm/odigos && ../../$(HELM_SCHEMA_BIN) --uncomment -k required
+
+$(HELM_SCHEMA_BIN):
+	@mkdir -p $(TOOLS_DIR)
+	GOBIN=$(CURDIR)/$(TOOLS_DIR) go install github.com/dadav/helm-schema/cmd/helm-schema@$(HELM_SCHEMA_VERSION)
+
+.PHONY: helm-schema-clean
+helm-schema-clean:
+	rm -f $(HELM_SCHEMA_BIN)
 
 build-image/%:
 	docker build $(TARGET_FLAG) \

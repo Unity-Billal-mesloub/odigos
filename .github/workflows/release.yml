@@ -62,7 +62,7 @@ jobs:
           tag: ${{ env.TAG }}
 
   build-cli:
-    needs: package-helm
+    needs: [package-helm]
     runs-on: depot-ubuntu-24.04-8
     steps:
       - name: Determine Tag Value
@@ -88,6 +88,11 @@ jobs:
             echo "IS_PRERELEASE=false" >> $GITHUB_ENV
             echo "This is a stable release: $TAG"
           fi
+
+          # Release branch for tag: v1.17.6 -> releases/v1.17.0
+          VERSION="${TAG#v}"
+          MAJOR_MINOR=$(echo "$VERSION" | cut -d. -f1,2)
+          echo "RELEASE_BRANCH=releases/v${MAJOR_MINOR}.0" >> $GITHUB_ENV
 
       - uses: actions/checkout@v5
         with:
@@ -119,9 +124,6 @@ jobs:
       - name: Verify Components Image Ready
         run: |
           declare -a REPOS=("odigos-autoscaler" "odigos-scheduler" "odigos-instrumentor" "odigos-odiglet" "odigos-collector" "odigos-enterprise-odiglet" "odigos-ui" "odigos-enterprise-instrumentor" "odigos-operator" "odigos-enterprise-agents" "odigos-enterprise-central-backend" "odigos-enterprise-central-proxy" "odigos-enterprise-central-ui")
-          for repo in "${REPOS[@]}"; do
-            REPOS+=("${repo}-rhel-certified")
-          done
 
           TAG_TO_CHECK=${{ env.TAG }}
 
@@ -162,11 +164,48 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
 
       - uses: actions/setup-node@v5
         with:
           node-version: 18
+
+      - name: Check if Homebrew tap should be updated
+        run: |
+          # Pre-releases always update their respective tap (homebrew-odigos-cli-rc)
+          if [ "${{ env.IS_PRERELEASE }}" = "true" ]; then
+            echo "Pre-release detected, will update Homebrew RC tap"
+            echo "SKIP_HOMEBREW_UPDATE=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # For stable releases, check if this version is newer than what's currently in the tap.
+          # This prevents older patch releases (e.g. v1.16.9) from overwriting a newer version (e.g. v1.17.0).
+          CURRENT_TAP_VERSION=$(curl -sf https://raw.githubusercontent.com/odigos-io/homebrew-odigos-cli/main/odigos.rb \
+            | grep 'version "' | head -1 | sed 's/.*version "\(.*\)"/\1/')
+
+          if [ -z "$CURRENT_TAP_VERSION" ]; then
+            echo "Could not fetch current tap version, will update Homebrew tap"
+            echo "SKIP_HOMEBREW_UPDATE=false" >> $GITHUB_ENV
+            exit 0
+          fi
+
+          # Strip 'v' prefix from release tag for comparison
+          RELEASE_VERSION="${TAG#v}"
+
+          echo "Current Homebrew tap version: $CURRENT_TAP_VERSION"
+          echo "New release version: $RELEASE_VERSION"
+
+          # Use sort -V (version sort) to determine which version is greater
+          HIGHEST=$(printf '%s\n%s' "$CURRENT_TAP_VERSION" "$RELEASE_VERSION" | sort -V | tail -1)
+
+          if [ "$HIGHEST" = "$RELEASE_VERSION" ] && [ "$CURRENT_TAP_VERSION" != "$RELEASE_VERSION" ]; then
+            echo "Release version $RELEASE_VERSION is newer than tap version $CURRENT_TAP_VERSION — will update Homebrew tap"
+            echo "SKIP_HOMEBREW_UPDATE=false" >> $GITHUB_ENV
+          else
+            echo "Release version $RELEASE_VERSION is NOT newer than tap version $CURRENT_TAP_VERSION — skipping Homebrew tap update"
+            echo "SKIP_HOMEBREW_UPDATE=true" >> $GITHUB_ENV
+          fi
 
       - uses: goreleaser/goreleaser-action@v6
         with:
@@ -177,7 +216,24 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HOMEBREW_GITHUB_API_TOKEN: ${{ secrets.HOMEBREW_GITHUB_API_TOKEN }}
           IS_PRERELEASE: ${{ env.IS_PRERELEASE }}
+          SKIP_HOMEBREW_UPDATE: ${{ env.SKIP_HOMEBREW_UPDATE }}
           GORELEASER_CURRENT_TAG: ${{ env.TAG }}
+
+      - name: Generate and update release notes
+        uses: odigos-io/ci-core/generate-release-notes@main
+        continue-on-error: true
+        with:
+          tag: ${{ env.TAG }}
+          release-branch: ${{ env.RELEASE_BRANCH }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Notify Slack (release notes)
+        uses: odigos-io/ci-core/.github/actions/slack-release-notification@main
+        with:
+          webhook-url: ${{ secrets.ODIGOS_RELEASE_STATUS_WEBHOOK_URL }}
+          success-description: "Release notes updated successfully"
+          failure-description: "ERROR: Failed to update release notes"
+          tag: ${{ env.TAG }}
 
       - uses: ko-build/setup-ko@v0.9
 
@@ -191,26 +247,6 @@ jobs:
           DATE: ${{ steps.vars.outputs.date }}
         run: |
           ko build --bare --tags latest --tags ${{ env.TAG }} --platform=linux/amd64,linux/arm64
-
-      - name: publish cli certified image to GCR registry
-        working-directory: ./cli
-        env:
-          KO_DOCKER_REPO: us-central1-docker.pkg.dev/odigos-cloud/components/odigos-cli-rhel-certified
-          KO_CONFIG_PATH: ./.ko.yaml
-          VERSION: ${{ env.TAG }}
-          SHORT_COMMIT: ${{ steps.vars.outputs.short_commit }}
-          DATE: ${{ steps.vars.outputs.date }}
-          KO_DEFAULTBASEIMAGE: registry.access.redhat.com/ubi9/ubi-micro:latest
-        run: |
-          ko build --bare --tags latest --tags ${{ env.TAG }} \
-          --image-label name=odigos-cli \
-          --image-label vendor=Odigos \
-          --image-label maintainer=Odigos \
-          --image-label version=${{ env.TAG }} \
-          --image-label release=${{ env.TAG }} \
-          --image-label summary="Odigos CLI" \
-          --image-label description="Odigos CLI to install and manage Odigos in your Kubernetes cluster." \
-          --platform=all .
 
       - name: Install crane
         uses: imjasonh/setup-crane@v0.4
@@ -242,7 +278,7 @@ jobs:
           tag: ${{ env.TAG }}
 
   publish-helm:
-    needs: build-cli
+    needs: [build-cli]
     runs-on: ubuntu-latest
     steps:
       - name: Determine Tag Value
@@ -290,26 +326,3 @@ jobs:
           success-description: "Helm charts published successfully. new version is ready"
           failure-description: "ERROR: Failed to publish Helm charts"
           tag: ${{ env.TAG }}
-
-  trigger-openshift-certification:
-    needs: publish-helm
-    runs-on: ubuntu-latest
-    steps:
-      - name: Determine Tag Value
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "TAG=${{ github.event.inputs.tag }}" >> $GITHUB_ENV
-          elif [ "${{ github.event_name }}" = "repository_dispatch" ]; then
-            echo "TAG=${{ github.event.client_payload.tag }}" >> $GITHUB_ENV
-          else
-            echo "Unknown event type"
-            exit 1
-          fi
-
-      - name: Trigger OpenShift Preflight job
-        run: |
-          curl -X POST \
-            -H "Accept: application/vnd.github.v3+json" \
-            -H "Authorization: token ${{ secrets.RELEASE_BOT_TOKEN }}" \
-            https://api.github.com/repos/odigos-io/odigos/dispatches \
-            -d '{"event_type": "openshift_preflight", "client_payload": {"tag": "${{ env.TAG }}"}}'

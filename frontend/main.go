@@ -17,6 +17,7 @@ import (
 	"github.com/99designs/gqlgen/graphql/executor"
 	"github.com/99designs/gqlgen/graphql/playground"
 	"github.com/gin-contrib/cors"
+	"github.com/gin-contrib/gzip"
 	"github.com/gin-gonic/gin"
 	"github.com/go-logr/logr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -88,7 +89,7 @@ func initKubernetesClient(flags *Flags) error {
 	}
 
 	kube.SetDefaultClient(client)
-	kube.InitArgoRolloutAvailability()
+	kube.InitWorkloadKindsAvailability()
 	return nil
 }
 
@@ -126,7 +127,7 @@ func startDatabase() error {
 
 // Serve React app (if page not found serve index.html)
 func serveClientFiles(ctx context.Context, r *gin.Engine, dist fs.FS) {
-	r.NoRoute(func(c *gin.Context) {
+	r.NoRoute(gzip.Gzip(gzip.DefaultCompression), func(c *gin.Context) {
 		// Apply OIDC middleware only for routes serving the frontend (GraphQL & Apollo cannot redirect)
 		middlewares.OidcMiddleware(ctx)(c)
 		if c.IsAborted() {
@@ -197,6 +198,7 @@ func startHTTPServer(ctx context.Context, flags *Flags, logger logr.Logger, odig
 			MetricsConsumer: odigosMetrics,
 			Logger:          logger,
 			PromAPI:         promAPI,
+			K8sCacheClient:  k8sCacheClient,
 		},
 	})
 	gqlExecutor := executor.New(gqlExecutableSchema)
@@ -304,7 +306,7 @@ func main() {
 	// from all namespaces, providing fast read access without hitting the Kubernetes API
 	k8sCacheClient, err := kube.SetupK8sCache(ctx, flags.KubeConfig, flags.KubeContext, flags.Namespace)
 	if err != nil {
-		log.Fatalf("Error setting up Source cache: %s", err)
+		log.Fatalf("Error setting up kubernetes objects cache: %s", err)
 	}
 
 	odigosMetrics := collectormetrics.NewOdigosMetrics()

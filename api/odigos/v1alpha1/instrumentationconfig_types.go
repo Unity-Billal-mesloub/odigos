@@ -4,6 +4,8 @@ import (
 	actions "github.com/odigos-io/odigos/api/odigos/v1alpha1/actions"
 	"github.com/odigos-io/odigos/api/odigos/v1alpha1/instrumentationrules"
 	"github.com/odigos-io/odigos/common"
+	commonapi "github.com/odigos-io/odigos/common/api"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -114,17 +116,19 @@ const (
 	AgentEnabledReasonImagePullBackOff AgentEnabledReason = "ImagePullBackOff"
 )
 
-// +kubebuilder:validation:Enum=RolloutTriggeredSuccessfully;FailedToPatch;PreviousRolloutOngoing;Disabled;WaitingForRestart;WorkloadNotSupporting
+// +kubebuilder:validation:Enum=RolloutTriggeredSuccessfully;FailedToPatch;PreviousRolloutOngoing;Disabled;WaitingForRestart;WorkloadNotSupporting;NotRequired;WaitingInQueue;RolloutFinished
 type WorkloadRolloutReason string
 
 const (
 	WorkloadRolloutReasonTriggeredSuccessfully  WorkloadRolloutReason = "RolloutTriggeredSuccessfully"
 	WorkloadRolloutReasonFailedToPatch          WorkloadRolloutReason = "FailedToPatch"
 	WorkloadRolloutReasonPreviousRolloutOngoing WorkloadRolloutReason = "PreviousRolloutOngoing"
+	WorkloadRolloutReasonRolloutFinished        WorkloadRolloutReason = "RolloutFinished"
 	WorkloadRolloutReasonDisabled               WorkloadRolloutReason = "Disabled"
 	WorkloadRolloutReasonNotRequired            WorkloadRolloutReason = "NotRequired"
 	WorkloadRolloutReasonWaitingForRestart      WorkloadRolloutReason = "WaitingForRestart"
 	WorkloadRolloutReasonWorkloadNotSupporting  WorkloadRolloutReason = "WorkloadNotSupporting"
+	WorkloadRolloutReasonWaitingInQueue         WorkloadRolloutReason = "WaitingInQueue"
 )
 
 const (
@@ -318,11 +322,6 @@ type AgentSpanMetricsConfig struct {
 	HistogramBucketsMs []int `json:"histogramBucketsMs,omitempty"`
 }
 
-type UrlTemplatizationConfig struct {
-	// Rule is the template rule to be applied to URLs
-	Rules []string `json:"templatizationRules,omitempty"`
-}
-
 type SpanRenamerScopeConfig struct {
 	// the name of the opentelemetry intrumentation scope which the renamed spans are written in.
 	ScopeName string `json:"scopeName"`
@@ -362,7 +361,7 @@ type AgentTracesConfig struct {
 	IdGenerator *IdGeneratorConfig `json:"idGenerator,omitempty"`
 
 	// A list of URL templatization configurations to be applied to the traces.
-	UrlTemplatization *UrlTemplatizationConfig `json:"urlTemplatization,omitempty"`
+	UrlTemplatization *commonapi.UrlTemplatizationConfig `json:"urlTemplatization,omitempty"`
 
 	// Configuration for headers collection. If not specified, no headers will be collected.
 	HeadersCollection *HeadersCollectionConfig `json:"headersCollection,omitempty"`
@@ -451,6 +450,8 @@ type InstrumentationConfigSpec struct {
 
 	// configuration for each instrumented container in the workload
 	Containers []ContainerAgentConfig `json:"containers,omitempty"`
+
+	WorkloadCollectorConfig []commonapi.ContainerCollectorConfig `json:"workloadCollectorConfig,omitempty"`
 
 	// will always list all containers of this workload by name,
 	// and override data in case it is configured on the source.

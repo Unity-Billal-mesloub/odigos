@@ -97,6 +97,12 @@ models:
         resolver: true
       telemetryMetrics:
         resolver: true
+      dataStreamNames:
+        resolver: true
+      numberOfInstances:
+        resolver: true
+      rollbackOccurred:
+        resolver: true
 
   K8sWorkloadTelemetryMetrics:
     fields:
@@ -110,3 +116,21 @@ models:
 
   K8sActualSource:
     fields:
+
+  SamplingConfigs:
+    fields:
+      effective:
+        resolver: true
+      helmDeployment:
+        resolver: true
+      remoteConfigFromCentral:
+        resolver: true
+      localUiConfig:
+        resolver: true
+
+  K8sNamespace:
+    fields:
+      markedForInstrumentation:
+        resolver: true
+      dataStreamNames:
+        resolver: true

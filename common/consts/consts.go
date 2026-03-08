@@ -2,18 +2,21 @@ package consts
 
 import (
 	"errors"
+	"time"
 )
 
 const (
-	CurrentNamespaceEnvVar  = "CURRENT_NS"
-	OdigosVersionEnvVarName = "ODIGOS_VERSION"
-	OdigosTierEnvVarName    = "ODIGOS_TIER"
-	DefaultOdigosNamespace  = "odigos-system"
-	OdigosConfigurationName = "odigos-configuration"
+	CurrentNamespaceEnvVar              = "CURRENT_NS"
+	OdigosVersionEnvVarName             = "ODIGOS_VERSION"
+	OdigosComponentDeploymentNameEnvVar = "ODIGOS_COMPONENT_DEPLOYMENT_NAME"
+	OdigosTierEnvVarName                = "ODIGOS_TIER"
+	DefaultOdigosNamespace              = "odigos-system"
+	OdigosConfigurationName             = "odigos-configuration"
 	// Deprecated: only used for migrations
 	OdigosLegacyConfigName      = "odigos-config"
 	OdigosEffectiveConfigName   = "effective-config"
 	OdigosRemoteConfigName      = "odigos-remote-config"
+	OdigosLocalUiConfigName     = "odigos-local-ui-config"
 	OdigosConfigurationFileName = "config.yaml"
 	OTLPPort                    = 4317
 	OTLPHttpPort                = 4318
@@ -134,16 +137,17 @@ const (
 	KarpenterStartupTaintKey = "odigos.io/needs-init"
 )
 
-// Batch processor related consts
+// Processor related consts
 const (
 	GenericBatchProcessorConfigKey = "batch/generic-batch-processor"
 	SmallBatchesProcessor          = "batch/small-batches"
+	GroupByTraceProcessorV2        = "groupbytrace/samplingv2"
 )
 
 // Auto rollback related consts
-const (
-	DefaultAutoRollbackGraceTime       = "5m"
-	DefaultAutoRollbackStabilityWindow = "1h"
+var (
+	DefaultAutoRollbackGraceTime       = 5 * time.Minute
+	DefaultAutoRollbackStabilityWindow = 1 * time.Hour
 )
 
 // UnixFD related consts

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -31,8 +30,9 @@ const (
 )
 
 var (
-	errNoSenderPod   = errors.New("no sender pod found in the resource attributes")
-	errUnKnownSender = errors.New("unknown OTLP sender")
+	errNoSenderPod     = errors.New("no sender pod found in the resource attributes")
+	errNoCollectorRole = errors.New("no collector role found in the resource attributes")
+	errUnKnownSender   = errors.New("unknown OTLP sender")
 )
 
 type trafficMetrics struct {
@@ -139,7 +139,16 @@ func (c *OdigosMetricsConsumer) runNotificationsLoop(ctx context.Context) {
 	}
 }
 
-func senderPodFromResource(md pmetric.Metrics) (string, error) {
+func collectorRoleFromResource(md pmetric.Metrics) (k8sconsts.CollectorRole, error) {
+	v, ok := md.ResourceMetrics().At(0).Resource().Attributes().Get("odigos.collector.role")
+	if !ok {
+		return "", errNoCollectorRole
+	}
+
+	return k8sconsts.CollectorRole(v.Str()), nil
+}
+
+func getSenderPod(md pmetric.Metrics) (string, error) {
 	v, ok := md.ResourceMetrics().At(0).Resource().Attributes().Get(string(semconv.K8SPodNameKey))
 	if !ok {
 		return "", errNoSenderPod
@@ -149,17 +158,21 @@ func senderPodFromResource(md pmetric.Metrics) (string, error) {
 }
 
 func (c *OdigosMetricsConsumer) ConsumeMetrics(ctx context.Context, md pmetric.Metrics) error {
-	senderPod, err := senderPodFromResource(md)
+	collectorRole, err := collectorRoleFromResource(md)
+	if err != nil {
+		return err
+	}
+	senderPod, err := getSenderPod(md)
 	if err != nil {
 		return err
 	}
 
-	if strings.HasPrefix(senderPod, k8sconsts.OdigletDaemonSetName) {
+	if collectorRole == k8sconsts.CollectorsRoleNodeCollector {
 		c.sources.handleNodeCollectorMetrics(senderPod, md)
 		return nil
 	}
 
-	if strings.HasPrefix(senderPod, k8sconsts.OdigosClusterCollectorDeploymentName) {
+	if collectorRole == k8sconsts.CollectorsRoleClusterGateway {
 		c.clusterCollectorMetrics.handleClusterCollectorMetrics(senderPod, md)
 		return nil
 	}

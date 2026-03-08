@@ -66,8 +66,22 @@ spec:
                 secretKeyRef:
                   name: keycloak-admin-credentials
                   key: admin-password
+            {{- $externalUrl := .Values.auth.externalUrl | default "http://localhost:8081" }}
+            {{- $parsedUrl := urlParse $externalUrl }}
+            {{- $hostWithPort := $parsedUrl.host | default "localhost:8081" }}
+            {{- $kcHostname := regexReplaceAll ":.*$" $hostWithPort "" }}
             - name: KC_HOSTNAME
-              value: "localhost"
+              value: {{ $kcHostname | quote }}
+            {{- if contains ":" $hostWithPort }}
+            - name: KC_HOSTNAME_PORT
+              value: {{ regexReplaceAll "^[^:]*:" $hostWithPort "" | quote }}
+            {{- end }}
+            - name: KC_HOSTNAME_STRICT_HTTPS
+              value: {{ ternary "true" "false" (hasPrefix "https" $externalUrl) | quote }}
+            - name: KC_HOSTNAME_STRICT_BACKCHANNEL
+              value: "true"
+            - name: KC_PROXY
+              value: "edge"
           {{- if .Values.auth.persistence.enabled }}
           volumeMounts:
             - name: keycloak-data

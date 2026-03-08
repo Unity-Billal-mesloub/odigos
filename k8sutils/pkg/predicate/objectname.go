@@ -88,12 +88,6 @@ var OdigosCollectorsGroupClusterPredicate = ObjectNamePredicate{
 	AllowedObjectName: k8sconsts.OdigosClusterCollectorCollectorGroupName,
 }
 
-// this predicate will only allow events for the odigos cluster collectors daemon set object.
-// this is useful if you only want to reconcile events for the cluster collectors daemon set object and ignore other daemon set objects.
-var ClusterCollectorDeploymentPredicate = ObjectNamePredicate{
-	AllowedObjectName: k8sconsts.OdigosClusterCollectorDeploymentName,
-}
-
 var OdigosProSecretPredicate = ObjectNamePredicate{
 	AllowedObjectName: k8sconsts.OdigosProSecretName,
 }
@@ -105,4 +99,10 @@ var OdigosDeploymentConfigMapPredicate = ObjectNamePredicate{
 // which contains configuration managed by the central-backend.
 var OdigosRemoteConfigMapPredicate = ObjectNamePredicate{
 	AllowedObjectName: consts.OdigosRemoteConfigName,
+}
+
+// OdigosLocalUiConfigMapPredicate filters events for the odigos-local-ui-config ConfigMap
+// which contains configuration for the local UI.
+var OdigosLocalUiConfigMapPredicate = ObjectNamePredicate{
+	AllowedObjectName: consts.OdigosLocalUiConfigName,
 }

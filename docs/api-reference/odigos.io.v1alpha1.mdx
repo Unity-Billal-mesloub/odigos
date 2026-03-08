@@ -17,6 +17,7 @@ auto_generated: true
 - [InstrumentationInstance](#odigos-io-v1alpha1-InstrumentationInstance)
 - [InstrumentationRule](#odigos-io-v1alpha1-InstrumentationRule)
 - [Processor](#odigos-io-v1alpha1-Processor)
+- [Sampling](#odigos-io-v1alpha1-Sampling)
 - [Source](#odigos-io-v1alpha1-Source)
   
 
@@ -351,6 +352,55 @@ auto_generated: true
 </td>
 <td>
 <a href="#odigos-io-v1alpha1-ProcessorStatus"><code>ProcessorStatus</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
+</tr>
+</tbody>
+</table>
+
+## `Sampling` <a id="odigos-io-v1alpha1-Sampling"></a>
+    
+<p>Sampling is the Schema for the sampling rules API.</p>
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+<tr><td><code>apiVersion</code></td><td>string</td><td><code>odigos.io/v1alpha1</code></td></tr>
+<tr><td><code>kind</code></td><td>string</td><td><code>Sampling</code></td></tr>
+    
+  
+<tr>
+<td>
+<code>metadata</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.31/#objectmeta-v1-meta"><code>meta/v1.ObjectMeta</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   Refer to the Kubernetes API documentation for the fields of the <code>metadata</code> field.
+   </td>
+</tr>
+<tr>
+<td>
+<code>spec</code> <B>[Required]</B>
+</td>
+<td>
+<a href="#odigos-io-v1alpha1-SamplingSpec"><code>SamplingSpec</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
+</tr>
+<tr>
+<td>
+<code>status</code> <B>[Required]</B>
+</td>
+<td>
+<a href="#odigos-io-v1alpha1-SamplingStatus"><code>SamplingStatus</code></a>
 </td>
 <td>
    <span class="text-muted">No description provided.</span>
@@ -733,7 +783,7 @@ if not specified, the default random id generator will be used.</p>
 <code>urlTemplatization</code> <B>[Required]</B>
 </td>
 <td>
-<a href="#odigos-io-v1alpha1-UrlTemplatizationConfig"><code>UrlTemplatizationConfig</code></a>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#UrlTemplatizationConfig"><code>common/api.UrlTemplatizationConfig</code></a>
 </td>
 <td>
    <p>A list of URL templatization configurations to be applied to the traces.</p>
@@ -1328,6 +1378,30 @@ This is a hard requirement: the pod will be scheduled ONLY on nodes that match a
 If no matching nodes exist, the pod will remain Pending.</p>
 </td>
 </tr>
+<tr>
+<td>
+<code>deploymentName</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>Deployment name for the collectors group deployment.
+Only relevant for cluster gateway collector.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>tailSampling</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#TailSamplingConfiguration"><code>common.TailSamplingConfiguration</code></a>
+</td>
+<td>
+   <p>Sampling holds the sampling configuration derived from the OdigosConfiguration.
+Currently this is only relevant for the cluster gateway collector.</p>
+</td>
+</tr>
 </tbody>
 </table>
 
@@ -1578,6 +1652,75 @@ and the distro to use will be calculated based on this value.</p>
    <p>select one specific otel distro to use for this container.
 the selected distro must match the programming language and any constraints of the distro.
 if the programmin language is incorrect, the runtime info can be overridden to match</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `CostReductionRule` <a id="odigos-io-v1alpha1-CostReductionRule"></a>
+    
+
+**Appears in:**
+
+- [SamplingSpec](#odigos-io-v1alpha1-SamplingSpec)
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr>
+<td>
+<code>sourceScopes</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/api/k8sconsts#SourcesScope"><code>[]k8sconsts.SourcesScope</code></a>
+</td>
+<td>
+   <p>limit this rule to specific sources (by name, namespace, language, etc.)
+an empty list will match any source.
+if multiple items are set, the operation match if any one matches
+this relates to the &quot;ResourceAttributes&quot; part of a span.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>operation</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#TailSamplingOperationMatcher"><code>common/api.TailSamplingOperationMatcher</code></a>
+</td>
+<td>
+   <p>limit this rule to specific operations.
+for example: specific endpoint or kafka topic.
+this field is optional, and if not set, the rule will be applied to all operations.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>percentageAtMost</code> <B>[Required]</B>
+</td>
+<td>
+<code>float64</code>
+</td>
+<td>
+   <p>sampling percentage for cost reduction.
+this field is required.
+the final sampling percentage for traces that match this rule
+will be the highest possible, but at most this value.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>notes</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>optional free-form text field that allows you to attach notes
+for future context and maintenance.
+users can write why this rule was added, observations, document considerations, etc.</p>
 </td>
 </tr>
 </tbody>
@@ -1914,6 +2057,99 @@ HTTP headers cannot be collected as wildcard, to avoid leaking sensitive informa
 </tbody>
 </table>
 
+## `HighlyRelevantOperation` <a id="odigos-io-v1alpha1-HighlyRelevantOperation"></a>
+    
+
+**Appears in:**
+
+- [SamplingSpec](#odigos-io-v1alpha1-SamplingSpec)
+
+<p>define operations (spans) with high observability value.
+if found anywhere in the trace, the entire trace will be kept
+regaradless of any cost reduction rules.</p>
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr>
+<td>
+<code>sourceScopes</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/api/k8sconsts#SourcesScope"><code>[]k8sconsts.SourcesScope</code></a>
+</td>
+<td>
+   <p>limit the operation to specific sources.
+an empty list will match any source.
+if multiple items are set, the operation match if any one matches
+this relates to the &quot;ResourceAttributes&quot; part of a span.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>error</code> <B>[Required]</B>
+</td>
+<td>
+<code>bool</code>
+</td>
+<td>
+   <p>if &quot;Error&quot; is set to true, only spans with SpanStatus set to &quot;Error&quot; are considered</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>durationAtLeastMs</code> <B>[Required]</B>
+</td>
+<td>
+<code>int</code>
+</td>
+<td>
+   <p>if Duration is set, only operations with duration in milli seconds larger then this value are considered</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>operation</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#TailSamplingOperationMatcher"><code>common/api.TailSamplingOperationMatcher</code></a>
+</td>
+<td>
+   <p>optionally, limit this rule to specific operations.
+for example: specific endpoint or kafka topic.
+this field is optional, and if not set, the rule will be applied to all operations.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>percentageAtLeast</code> <B>[Required]</B>
+</td>
+<td>
+<code>float64</code>
+</td>
+<td>
+   <p>traces that contains this operation will be sampled by at least this percentage.
+if unset, 100% of such the traces will be sampled.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>notes</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>optional free-form text field that allows you to attach notes
+for future context and maintenance.
+users can write why this rule was added, observations, document considerations, etc.</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `IdGeneratorConfig` <a id="odigos-io-v1alpha1-IdGeneratorConfig"></a>
     
 
@@ -2056,6 +2292,17 @@ if false, at least one container requires pod manifest changes to enable agent i
 <td>
    <p>configuration for each instrumented container in the workload</p>
 </td>
+</tr>
+<tr>
+<td>
+<code>workloadCollectorConfig</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#ContainerCollectorConfig"><code>[]common/api.ContainerCollectorConfig</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
 </tr>
 <tr>
 <td>
@@ -2757,7 +3004,8 @@ If empty, no instrumentation libraries will be used.</p>
 <td>
    <p>Configure general fraction of traces to record if none of the rules evaluate to true.
 this can help in reducing very noisy and heavy traffic services.
-note that traces will be dropped regardless of thier attributes/errors/importance.</p>
+note that traces will be dropped regardless of thier attributes/errors/importance.
+@deprecated: use odigos config to set this value instead.</p>
 </td>
 </tr>
 </tbody>
@@ -2785,6 +3033,85 @@ note that traces will be dropped regardless of thier attributes/errors/importanc
 <td>
    <p>Represents the observations of a instrumentationrule's current state.
 Known .status.conditions.type are: &quot;Available&quot;, &quot;Progressing&quot;</p>
+</td>
+</tr>
+</tbody>
+</table>
+
+## `NoisyOperation` <a id="odigos-io-v1alpha1-NoisyOperation"></a>
+    
+
+**Appears in:**
+
+- [SamplingSpec](#odigos-io-v1alpha1-SamplingSpec)
+
+<p>endpoints (or other operations) which are considered &quot;noise&quot;, and provide no or very little observability value.
+these traces should not be collected at all, or dropped aggresevly.
+motivation is data sentization and performance improvment (even if cost is not a factor)</p>
+<p>examples:</p>
+<ul>
+<li>health-checks (readiness and liveness probes)</li>
+<li>metrics scrape endpoints (prometheus /metrics endpoint)</li>
+<li>other agents calling home (outgoing http requests to collector.my.vendor.com)</li>
+</ul>
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr>
+<td>
+<code>sourceScopes</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/api/k8sconsts#SourcesScope"><code>[]k8sconsts.SourcesScope</code></a>
+</td>
+<td>
+   <p>limit this rule to specific sources (by name, namespace, language, etc.)
+for example: if &quot;other agent&quot; rule for noisty operation is relevant only in java,
+limit this rule by setting source scope to java and prevent other languages from being affected
+if the list is empty - all sources are matched.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>operation</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://pkg.go.dev/github.com/odigos-io/odigos/common#HeadSamplingOperationMatcher"><code>common/api.HeadSamplingOperationMatcher</code></a>
+</td>
+<td>
+   <p>limit this rule to specific operations.
+for example: specific http server endpoint (GET &quot;/healthz&quot; as an example).
+this field is optional, and if not set, the rule will be applied to all operations.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>percentageAtMost</code> <B>[Required]</B>
+</td>
+<td>
+<code>float64</code>
+</td>
+<td>
+   <p>sampling percentage for noisy operations.
+if unset, 0% of such the traces will be collected.
+this percentage has &quot;at most&quot; semantics - the final sampling percentage for traces that match this rule
+will be the highest possible, but at most this value.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>notes</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>optional free-form text field that allows you to attach notes
+for future context and maintenance.
+users can write why this rule was added, observations, document considerations, etc.</p>
 </td>
 </tr>
 </tbody>
@@ -3202,6 +3529,125 @@ Thus, this field is set only when there is:</p>
 </tbody>
 </table>
 
+## `SamplingSpec` <a id="odigos-io-v1alpha1-SamplingSpec"></a>
+    
+
+**Appears in:**
+
+- [Sampling](#odigos-io-v1alpha1-Sampling)
+
+<p>define sampling rules.
+the rules can be defined as one or multiple objects in kubernetes,
+and are all joined together to form the global sampling rules.
+odigos users can group rules based on whatever criteria that makes sense for them,
+for example - by team, by client, by usecase, admin-policy, etc.</p>
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr>
+<td>
+<code>name</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>give these sampling rules a name for display, easier identification and reference.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>notes</code> <B>[Required]</B>
+</td>
+<td>
+<code>string</code>
+</td>
+<td>
+   <p>a free-form text field that allows you to attach notes regardinag the rule for convenience.
+Odigos does not use or assume any meaning from this field.</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>disabled</code> <B>[Required]</B>
+</td>
+<td>
+<code>bool</code>
+</td>
+<td>
+   <p>if set to true, the sampling rules will be disabled,
+they will not be taken into account for any sampling decisions.
+useful if you want to temporarily disable the rules but re-enable them later,</p>
+</td>
+</tr>
+<tr>
+<td>
+<code>noisyOperations</code> <B>[Required]</B>
+</td>
+<td>
+<a href="#odigos-io-v1alpha1-NoisyOperation"><code>[]NoisyOperation</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
+</tr>
+<tr>
+<td>
+<code>highlyRelevantOperations</code> <B>[Required]</B>
+</td>
+<td>
+<a href="#odigos-io-v1alpha1-HighlyRelevantOperation"><code>[]HighlyRelevantOperation</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
+</tr>
+<tr>
+<td>
+<code>costReductionRules</code> <B>[Required]</B>
+</td>
+<td>
+<a href="#odigos-io-v1alpha1-CostReductionRule"><code>[]CostReductionRule</code></a>
+</td>
+<td>
+   <span class="text-muted">No description provided.</span>
+   </td>
+</tr>
+</tbody>
+</table>
+
+## `SamplingStatus` <a id="odigos-io-v1alpha1-SamplingStatus"></a>
+    
+
+**Appears in:**
+
+- [Sampling](#odigos-io-v1alpha1-Sampling)
+
+<p>SamplingStatus defines the observed state of Sampling.</p>
+
+<table class="table">
+<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
+<tbody>
+    
+  
+<tr>
+<td>
+<code>conditions</code> <B>[Required]</B>
+</td>
+<td>
+<a href="https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.31/#condition-v1-meta"><code>[]meta/v1.Condition</code></a>
+</td>
+<td>
+   <p>Represents the observations of a Sampling's current state.
+Known .status.conditions.type are: &quot;Available&quot;, &quot;Progressing&quot;</p>
+</td>
+</tr>
+</tbody>
+</table>
+
 ## `SdkConfig` <a id="odigos-io-v1alpha1-SdkConfig"></a>
     
 
@@ -3538,32 +3984,6 @@ all options are always tried, regardless of whether the previous options have ma
 <td>
    <p>list of regex replacements to be applied to the span name.
 all options are always tried, regardless of whether the previous options have matched or not.</p>
-</td>
-</tr>
-</tbody>
-</table>
-
-## `UrlTemplatizationConfig` <a id="odigos-io-v1alpha1-UrlTemplatizationConfig"></a>
-    
-
-**Appears in:**
-
-- [AgentTracesConfig](#odigos-io-v1alpha1-AgentTracesConfig)
-
-<table class="table">
-<thead><tr><th width="30%">Field</th><th>Type</th><th>Description</th></tr></thead>
-<tbody>
-    
-  
-<tr>
-<td>
-<code>templatizationRules</code> <B>[Required]</B>
-</td>
-<td>
-<code>[]string</code>
-</td>
-<td>
-   <p>Rule is the template rule to be applied to URLs</p>
 </td>
 </tr>
 </tbody>

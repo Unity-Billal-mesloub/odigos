@@ -13,7 +13,6 @@ import (
 	"github.com/odigos-io/odigos/api/k8sconsts"
 	"github.com/odigos-io/odigos/api/odigos/v1alpha1"
 	"github.com/odigos-io/odigos/common"
-	"github.com/odigos-io/odigos/frontend/graph/loaders"
 	"github.com/odigos-io/odigos/frontend/graph/model"
 	"github.com/odigos-io/odigos/frontend/kube"
 	"github.com/odigos-io/odigos/frontend/services"
@@ -341,6 +340,8 @@ func (r *mutationResolver) PersistK8sSources(ctx context.Context, sources []*mod
 	if err != nil {
 		return false, fmt.Errorf("failed to sync workloads: %v", err)
 	}
+
+	services.MarkInstallationFinished(ctx)
 
 	return true, nil
 }
@@ -826,6 +827,14 @@ func (r *mutationResolver) DeleteCentralProxy(ctx context.Context) (bool, error)
 	return services.DeleteCentralProxy(ctx)
 }
 
+// RecoverFromRollbackForWorkload is the resolver for the recoverFromRollbackForWorkload field.
+func (r *mutationResolver) RecoverFromRollbackForWorkload(ctx context.Context, sourceID model.K8sSourceID) (bool, error) {
+	if err := services.RecoverFromRollback(ctx, kube.CacheClient, sourceID.Namespace, sourceID.Name, string(sourceID.Kind)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // ComputePlatform is the resolver for the computePlatform field.
 func (r *queryResolver) ComputePlatform(ctx context.Context) (*model.ComputePlatform, error) {
 	return &model.ComputePlatform{
@@ -933,6 +942,16 @@ func (r *queryResolver) GetServiceMap(ctx context.Context) (*model.ServiceMap, e
 	return &model.ServiceMap{Services: services}, nil
 }
 
+// PeerSources is the resolver for the peerSources field.
+func (r *queryResolver) PeerSources(ctx context.Context, serviceName string) (*model.PeerSources, error) {
+	if r.MetricsConsumer == nil {
+		return nil, fmt.Errorf("metrics consumer not initialized")
+	}
+
+	allEdges := r.MetricsConsumer.GetServiceGraphEdges()
+	return services.PeerSources(allEdges, serviceName), nil
+}
+
 // DescribeOdigos is the resolver for the describeOdigos field.
 func (r *queryResolver) DescribeOdigos(ctx context.Context) (*model.OdigosAnalyze, error) {
 	return odigos_describe.GetOdigosDescription(ctx)
@@ -1006,22 +1025,6 @@ func (r *queryResolver) InstrumentationInstanceComponents(ctx context.Context, n
 	}
 
 	return components, nil
-}
-
-// Workloads is the resolver for the workloads field.
-func (r *queryResolver) Workloads(ctx context.Context, filter *model.WorkloadFilter) ([]*model.K8sWorkload, error) {
-	l := loaders.For(ctx)
-	err := l.SetFilters(ctx, filter)
-	if err != nil {
-		return nil, err
-	}
-	sources := make([]*model.K8sWorkload, 0)
-	for _, sourceId := range l.GetWorkloadIds() {
-		sources = append(sources, &model.K8sWorkload{
-			ID: &sourceId,
-		})
-	}
-	return sources, nil
 }
 
 // Diagnose is the resolver for the diagnose field.

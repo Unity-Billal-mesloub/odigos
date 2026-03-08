@@ -63,6 +63,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &odigosv1alpha1.ContainerAgentConfigApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ContainerOverride"):
 		return &odigosv1alpha1.ContainerOverrideApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("CostReductionRule"):
+		return &odigosv1alpha1.CostReductionRuleApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Destination"):
 		return &odigosv1alpha1.DestinationApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("DestinationMetricsSettings"):
@@ -77,6 +79,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &odigosv1alpha1.HeadersCollectionConfigApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("HeadSamplingConfig"):
 		return &odigosv1alpha1.HeadSamplingConfigApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("HighlyRelevantOperation"):
+		return &odigosv1alpha1.HighlyRelevantOperationApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("IdGeneratorConfig"):
 		return &odigosv1alpha1.IdGeneratorConfigApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("IdGeneratorTimedWallConfig"):
@@ -109,6 +113,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &odigosv1alpha1.InstrumentationRuleSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InstrumentationRuleStatus"):
 		return &odigosv1alpha1.InstrumentationRuleStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("NoisyOperation"):
+		return &odigosv1alpha1.NoisyOperationApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("OdigosOwnMetricsSettings"):
 		return &odigosv1alpha1.OdigosOwnMetricsSettingsApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("OtherAgent"):
@@ -121,6 +127,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &odigosv1alpha1.ProcessorSpecApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("RuntimeDetailsByContainer"):
 		return &odigosv1alpha1.RuntimeDetailsByContainerApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("Sampling"):
+		return &odigosv1alpha1.SamplingApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("SamplingSpec"):
+		return &odigosv1alpha1.SamplingSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("SamplingStatus"):
+		return &odigosv1alpha1.SamplingStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("SdkConfig"):
 		return &odigosv1alpha1.SdkConfigApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Source"):
@@ -135,8 +147,6 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &odigosv1alpha1.SpanRenamerConfigApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("SpanRenamerScopeRules"):
 		return &odigosv1alpha1.SpanRenamerScopeRulesApplyConfiguration{}
-	case v1alpha1.SchemeGroupVersion.WithKind("UrlTemplatizationConfig"):
-		return &odigosv1alpha1.UrlTemplatizationConfigApplyConfiguration{}
 
 	}
 	return nil

@@ -2,19 +2,67 @@ package clustercollectorsgroup
 
 import (
 	"context"
+	"slices"
+	"time"
 
 	"github.com/odigos-io/odigos/api/k8sconsts"
 	odigosv1 "github.com/odigos-io/odigos/api/odigos/v1alpha1"
+	"github.com/odigos-io/odigos/common"
 	"github.com/odigos-io/odigos/k8sutils/pkg/env"
 	k8sutils "github.com/odigos-io/odigos/k8sutils/pkg/utils"
 	"github.com/odigos-io/odigos/scheduler/utils"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
+func getOwnMetricsConfig(odigosConfiguration *common.OdigosConfiguration, allDestinations *odigosv1.DestinationList) *odigosv1.CollectorsGroupMetricsCollectionSettings {
+	ownMetricsInterval := "10s"
+	if odigosConfiguration.MetricsSources != nil &&
+		odigosConfiguration.MetricsSources.OdigosOwnMetrics != nil &&
+		odigosConfiguration.MetricsSources.OdigosOwnMetrics.Interval != "" {
+		ownMetricsInterval = odigosConfiguration.MetricsSources.OdigosOwnMetrics.Interval
+	}
+
+	ownMetricsLocalStorageEnabled := false
+	if odigosConfiguration.OdigosOwnTelemetryStore == nil ||
+		odigosConfiguration.OdigosOwnTelemetryStore.MetricsStoreDisabled == nil ||
+		!*odigosConfiguration.OdigosOwnTelemetryStore.MetricsStoreDisabled {
+		ownMetricsLocalStorageEnabled = true
+	}
+
+	sendToMetricsDestinations := false
+	for _, destination := range allDestinations.Items {
+		if destination.Spec.Disabled != nil && *destination.Spec.Disabled {
+			continue
+		}
+		if !slices.Contains(destination.Spec.Signals, common.MetricsObservabilitySignal) {
+			continue
+		}
+		if destination.Spec.MetricsSettings != nil &&
+			destination.Spec.MetricsSettings.CollectOdigosOwnMetrics != nil &&
+			*destination.Spec.MetricsSettings.CollectOdigosOwnMetrics {
+			sendToMetricsDestinations = true
+			break
+		}
+	}
+
+	if !ownMetricsLocalStorageEnabled && !sendToMetricsDestinations {
+		return nil
+	}
+
+	return &odigosv1.CollectorsGroupMetricsCollectionSettings{
+		OdigosOwnMetrics: &odigosv1.OdigosOwnMetricsSettings{
+			SendToOdigosMetricsStore:  ownMetricsLocalStorageEnabled,
+			SendToMetricsDestinations: sendToMetricsDestinations,
+			Interval:                  ownMetricsInterval,
+		},
+	}
+}
+
 func newClusterCollectorGroup(namespace string, resourcesSettings *odigosv1.CollectorsGroupResourcesSettings, serviceGraphDisabled *bool, clusterMetricsEnabled *bool,
-	httpsProxyAddress *string, nodeSelector *map[string]string) *odigosv1.CollectorsGroup {
+	httpsProxyAddress *string, nodeSelector *map[string]string, deploymentName string, metricsConfig *odigosv1.CollectorsGroupMetricsCollectionSettings, tailSampling *common.TailSamplingConfiguration) *odigosv1.CollectorsGroup {
 	return &odigosv1.CollectorsGroup{
 		TypeMeta: metav1.TypeMeta{
 			Kind:       "CollectorsGroup",
@@ -32,6 +80,9 @@ func newClusterCollectorGroup(namespace string, resourcesSettings *odigosv1.Coll
 			ClusterMetricsEnabled:   clusterMetricsEnabled,
 			HttpsProxyAddress:       httpsProxyAddress,
 			NodeSelector:            nodeSelector,
+			DeploymentName:          deploymentName,
+			Metrics:                 metricsConfig,
+			TailSampling:            tailSampling,
 		},
 	}
 }
@@ -61,13 +112,25 @@ func sync(ctx context.Context, c client.Client, scheme *runtime.Scheme) error {
 	}
 
 	nodeSelector := odigosConfiguration.CollectorGateway.NodeSelector
+	deploymentName := odigosConfiguration.CollectorGateway.DeploymentName
+	allDestinations := &odigosv1.DestinationList{}
+	if err := c.List(ctx, allDestinations); err != nil {
+		return err
+	}
+
+	ownMetricsConfig := getOwnMetricsConfig(&odigosConfiguration, allDestinations)
+
+	var tailSampling *common.TailSamplingConfiguration
+	if isTailSamplingEnabled(ctx, c, &odigosConfiguration) {
+		tailSampling = resolveTailSamplingConfig(ctx, &odigosConfiguration, true)
+	}
 
 	// cluster collector is always set and never deleted at the moment.
 	// this is to accelerate spinup time and avoid errors while things are gradually being reconciled
 	// and started.
 	// in the future we might want to support a deployment of instrumentations only and allow user
 	// to setup their own collectors, then we would avoid adding the cluster collector by default.
-	clusterCollectorGroup := newClusterCollectorGroup(namespace, resourceSettings, serviceGraphDisabled, clusterMetricsEnabled, odigosConfiguration.CollectorGateway.HttpsProxyAddress, nodeSelector)
+	clusterCollectorGroup := newClusterCollectorGroup(namespace, resourceSettings, serviceGraphDisabled, clusterMetricsEnabled, odigosConfiguration.CollectorGateway.HttpsProxyAddress, nodeSelector, deploymentName, ownMetricsConfig, tailSampling)
 	err = utils.SetOwnerControllerToSchedulerDeployment(ctx, c, clusterCollectorGroup, scheme)
 	if err != nil {
 		return err
@@ -79,4 +142,60 @@ func sync(ctx context.Context, c client.Client, scheme *runtime.Scheme) error {
 	}
 
 	return nil
+}
+
+// isTailSamplingEnabled returns true if tail sampling is not globally disabled
+// and at least one non-disabled Sampling CR exists.
+func isTailSamplingEnabled(ctx context.Context, c client.Client, odigosConfig *common.OdigosConfiguration) bool {
+	logger := log.FromContext(ctx)
+
+	if odigosConfig.Sampling != nil &&
+		odigosConfig.Sampling.TailSampling != nil &&
+		odigosConfig.Sampling.TailSampling.Disabled != nil &&
+		*odigosConfig.Sampling.TailSampling.Disabled {
+		return false
+	}
+
+	samplingList := &odigosv1.SamplingList{}
+	if err := c.List(ctx, samplingList, &client.ListOptions{Namespace: env.GetCurrentNamespace()}); err != nil {
+		logger.Error(err, "Failed to list Sampling CRs, tail sampling will be disabled")
+		return false
+	}
+
+	if len(samplingList.Items) == 0 {
+		return false
+	}
+
+	for _, s := range samplingList.Items {
+		if !s.Spec.Disabled {
+			return true
+		}
+	}
+
+	return false
+}
+
+// resolveTailSamplingConfig returns a fully resolved TailSamplingConfiguration,
+// reading TraceAggregationWaitDuration from odigosConfig if valid, otherwise using the default.
+func resolveTailSamplingConfig(ctx context.Context, odigosConfig *common.OdigosConfiguration, enabled bool) *common.TailSamplingConfiguration {
+	logger := log.FromContext(ctx)
+
+	resolvedDuration := k8sconsts.OdigosClusterCollectorTraceAggregationWaitDurationDefault
+	if odigosConfig.Sampling != nil &&
+		odigosConfig.Sampling.TailSampling != nil &&
+		odigosConfig.Sampling.TailSampling.TraceAggregationWaitDuration != nil {
+		configured := *odigosConfig.Sampling.TailSampling.TraceAggregationWaitDuration
+		if d, err := time.ParseDuration(configured); err != nil || d <= 0 {
+			logger.Info("invalid TraceAggregationWaitDuration, using default",
+				"configured", configured, "default", resolvedDuration)
+		} else {
+			resolvedDuration = configured
+		}
+	}
+
+	disabled := !enabled
+	return &common.TailSamplingConfiguration{
+		TraceAggregationWaitDuration: &resolvedDuration,
+		Disabled:                     &disabled,
+	}
 }

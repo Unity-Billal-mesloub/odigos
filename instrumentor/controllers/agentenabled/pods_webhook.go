@@ -351,7 +351,7 @@ func (p *PodsWebhook) injectOdigosToContainer(containerConfig *odigosv1.Containe
 	}
 
 	// URL Templatization configuration
-	urlTemplatizationEnabled := containerConfig.Traces != nil && containerConfig.Traces.UrlTemplatization != nil && len(containerConfig.Traces.UrlTemplatization.Rules) > 0
+	urlTemplatizationEnabled := containerConfig.Traces != nil && containerConfig.Traces.UrlTemplatization != nil && len(containerConfig.Traces.UrlTemplatization.TemplatizationRules) > 0
 	supportsUrlTemplatization := distroMetadata.Traces != nil && distroMetadata.Traces.UrlTemplatization != nil && distroMetadata.Traces.UrlTemplatization.Supported
 	if urlTemplatizationEnabled && supportsUrlTemplatization && distroMetadata.ConfigAsEnvVars {
 		// parse URL templatization config to json using the existing AgentTracesConfig struct
@@ -410,30 +410,9 @@ func (p *PodsWebhook) injectOdigosToContainer(containerConfig *odigosv1.Containe
 		if distroMetadata.RuntimeAgent.K8sAttrsViaEnvVars {
 			podswebhook.InjectOtelResourceAndServiceNameEnvVars(existingEnvNames, podContainerSpec, distroMetadata.Name, pw, serviceName, ownerReferences)
 		}
-		// TODO: once we have a flag to enable/disable device injection, we should check it here.
-		if distroMetadata.RuntimeAgent.Device != nil {
-
-			// amir 17 feb 2025, this is here only for migration.
-			// even if mount method is not device, we still need to inject the deprecated agent specific device
-			// while we remove them one by one
-			isGenericDevice := *distroMetadata.RuntimeAgent.Device == k8sconsts.OdigosGenericDeviceName
-			if *config.MountMethod == common.K8sVirtualDeviceMountMethod || !isGenericDevice {
-				deviceName := *distroMetadata.RuntimeAgent.Device
-				// TODO: currently devices are composed with glibc as input for dotnet.
-				// as devices will soon converge to a single device, I am hardcoding the logic here,
-				// which will eventually be removed once dotnet specific devices are removed.
-				if containerConfig.DistroParams != nil {
-					libcType, ok := containerConfig.DistroParams[common.LibcTypeDistroParameterName]
-					if ok {
-						libcPrefix := ""
-						if libcType == string(common.Musl) {
-							libcPrefix = "musl-"
-						}
-						deviceName = strings.ReplaceAll(deviceName, "{{param.LIBC_TYPE}}", libcPrefix)
-					}
-				}
-				podswebhook.InjectDeviceToContainer(podContainerSpec, deviceName)
-			}
+		if distroMetadata.RuntimeAgent.Device != nil && *config.MountMethod == common.K8sVirtualDeviceMountMethod {
+			deviceName := *distroMetadata.RuntimeAgent.Device
+			podswebhook.InjectDeviceToContainer(podContainerSpec, deviceName)
 		}
 	}
 
@@ -495,10 +474,6 @@ func getRuntimeInfoForContainerName(ic *odigosv1.InstrumentationConfig, containe
 }
 
 func createInitContainer(pod *corev1.Pod, dirsToCopy map[string]struct{}, config common.OdigosConfiguration) {
-	const (
-		instrumentationsPath = "/instrumentations"
-	)
-
 	imageName := getInitContainerImage(config)
 
 	var copyCommands []string
@@ -513,7 +488,7 @@ func createInitContainer(pod *corev1.Pod, dirsToCopy map[string]struct{}, config
 	sort.Strings(dirs)
 
 	for _, dir := range dirs {
-		from := strings.ReplaceAll(dir, distro.AgentPlaceholderDirectory, instrumentationsPath)
+		from := strings.ReplaceAll(dir, distro.AgentPlaceholderDirectory, k8sconsts.OdigletContainerAgentDirectory)
 		to := strings.ReplaceAll(dir, distro.AgentPlaceholderDirectory, k8sconsts.OdigosAgentsDirectory)
 		copyCommands = append(copyCommands, fmt.Sprintf("cp -r %s %s", from, to))
 	}

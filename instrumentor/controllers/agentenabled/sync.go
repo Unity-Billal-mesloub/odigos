@@ -5,24 +5,28 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	"github.com/hashicorp/go-version"
-	actionsv1 "github.com/odigos-io/odigos/api/actions/v1alpha1"
+
 	"github.com/odigos-io/odigos/api/k8sconsts"
 	odigosv1 "github.com/odigos-io/odigos/api/odigos/v1alpha1"
-	"github.com/odigos-io/odigos/api/odigos/v1alpha1/actions"
 	"github.com/odigos-io/odigos/common"
+	commonapi "github.com/odigos-io/odigos/common/api"
 	commonconsts "github.com/odigos-io/odigos/common/consts"
 	"github.com/odigos-io/odigos/distros"
 	"github.com/odigos-io/odigos/distros/distro"
 	"github.com/odigos-io/odigos/instrumentor/controllers/agentenabled/rollout"
+	"github.com/odigos-io/odigos/instrumentor/controllers/agentenabled/sampling"
 	"github.com/odigos-io/odigos/instrumentor/controllers/agentenabled/signalconfig"
+	"github.com/odigos-io/odigos/k8sutils/pkg/scope"
 	"github.com/odigos-io/odigos/k8sutils/pkg/utils"
 	k8sutils "github.com/odigos-io/odigos/k8sutils/pkg/utils"
 	"github.com/odigos-io/odigos/k8sutils/pkg/workload"
+
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,7 +51,7 @@ type agentInjectedStatusCondition struct {
 	Message string
 }
 
-func reconcileAll(ctx context.Context, c client.Client, dp *distros.Provider) (ctrl.Result, error) {
+func reconcileAll(ctx context.Context, c client.Client, dp *distros.Provider, rolloutConcurrencyLimiter *rollout.RolloutConcurrencyLimiter) (ctrl.Result, error) {
 	allInstrumentationConfigs := odigosv1.InstrumentationConfigList{}
 	listErr := c.List(ctx, &allInstrumentationConfigs)
 	if listErr != nil {
@@ -62,7 +66,7 @@ func reconcileAll(ctx context.Context, c client.Client, dp *distros.Provider) (c
 	var allErrs error
 	aggregatedResult := ctrl.Result{}
 	for _, ic := range allInstrumentationConfigs.Items {
-		res, workloadErr := reconcileWorkload(ctx, c, ic.Name, ic.Namespace, dp, &conf)
+		res, workloadErr := reconcileWorkload(ctx, c, ic.Name, ic.Namespace, dp, &conf, rolloutConcurrencyLimiter)
 		if workloadErr != nil {
 			allErrs = errors.Join(allErrs, workloadErr)
 		}
@@ -78,7 +82,7 @@ func reconcileAll(ctx context.Context, c client.Client, dp *distros.Provider) (c
 	return aggregatedResult, allErrs
 }
 
-func reconcileWorkload(ctx context.Context, c client.Client, icName string, namespace string, distroProvider *distros.Provider, conf *common.OdigosConfiguration) (ctrl.Result, error) {
+func reconcileWorkload(ctx context.Context, c client.Client, icName string, namespace string, distroProvider *distros.Provider, conf *common.OdigosConfiguration, rolloutConcurrencyLimiter *rollout.RolloutConcurrencyLimiter) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	pw, err := workload.ExtractWorkloadInfoFromRuntimeObjectName(icName, namespace)
@@ -93,12 +97,11 @@ func reconcileWorkload(ctx context.Context, c client.Client, icName string, name
 		if apierrors.IsNotFound(err) {
 			// instrumentation config is deleted, trigger a rollout for the associated workload
 			// this should happen once per workload, as the instrumentation config is deleted
-			_, res, err := rollout.Do(ctx, c, nil, pw, conf, distroProvider)
-			return res, err
+			rolloutResult, doErr := rollout.Do(ctx, c, nil, pw, conf, distroProvider, rolloutConcurrencyLimiter)
+			return rolloutResult.Result, doErr
 		}
 		return ctrl.Result{}, err
 	}
-
 	logger.Info("Reconciling workload for InstrumentationConfig object agent enabling", "name", ic.Name, "namespace", ic.Namespace, "instrumentationConfigName", ic.Name)
 
 	condition, err := updateInstrumentationConfigSpec(ctx, c, pw, &ic, distroProvider, conf)
@@ -119,17 +122,16 @@ func reconcileWorkload(ctx context.Context, c client.Client, icName string, name
 	}
 
 	agentEnabledChanged := meta.SetStatusCondition(&ic.Status.Conditions, cond)
-	rolloutChanged, res, err := rollout.Do(ctx, c, &ic, pw, conf, distroProvider)
+	rolloutResult, doErr := rollout.Do(ctx, c, &ic, pw, conf, distroProvider, rolloutConcurrencyLimiter)
 
-	if rolloutChanged || agentEnabledChanged {
+	if rolloutResult.StatusChanged || agentEnabledChanged {
 		updateErr := c.Status().Update(ctx, &ic)
 		if updateErr != nil {
-			// if the update fails, we should not return an error, but rather log it and retry later.
 			return utils.K8SUpdateErrorHandler(updateErr)
 		}
 	}
 
-	return res, err
+	return rolloutResult.Result, doErr
 }
 
 func updateInstrumentationConfigAgentsMetaHash(ic *odigosv1.InstrumentationConfig, newValue string) {
@@ -148,7 +150,7 @@ func updateInstrumentationConfigAgentsMetaHash(ic *odigosv1.InstrumentationConfi
 // and later be used for viability and monitoring purposes.
 func updateInstrumentationConfigSpec(ctx context.Context, c client.Client, pw k8sconsts.PodWorkload, ic *odigosv1.InstrumentationConfig, distroProvider *distros.Provider, effectiveConfig *common.OdigosConfiguration) (*agentInjectedStatusCondition, error) {
 	logger := log.FromContext(ctx)
-	cg, irls, agentLevelActions, workloadObj, err := getRelevantResources(ctx, c, pw)
+	cg, irls, agentLevelActions, samplingRules, workloadObj, err := getRelevantResources(ctx, c, pw)
 	if err != nil {
 		// error of fetching one of the resources, retry
 		return nil, err
@@ -187,7 +189,8 @@ func updateInstrumentationConfigSpec(ctx context.Context, c client.Client, pw k8
 	distroPerLanguage := calculateDefaultDistroPerLanguage(defaultDistrosPerLanguage, irls, distroProvider.Getter)
 
 	// If the source was already marked for instrumentation, but has caused a CrashLoopBackOff or ImagePullBackOff we'd like to stop
-	// instrumentating it and to disable future instrumentation of this service
+	// instrumentating it and to disable future instrumentation of this service.
+	// Recovery from rollback is already handled in reconcileWorkload before this function is called.
 	rollbackOccurred := ic.Status.RollbackOccurred
 	// Get existing backoff reason from status conditions if available
 	var existingBackoffReason odigosv1.AgentEnabledReason
@@ -209,7 +212,12 @@ func updateInstrumentationConfigSpec(ctx context.Context, c client.Client, pw k8
 			}
 		}
 	}
+	// If not found in containers and we are in rollback state, default to CrashLoopBackOff
+	if rollbackOccurred && existingBackoffReason == "" {
+		existingBackoffReason = odigosv1.AgentEnabledReasonCrashLoopBackOff
+	}
 	containersConfig := make([]odigosv1.ContainerAgentConfig, 0, len(ic.Spec.Containers))
+	collectorConfig := make([]commonapi.ContainerCollectorConfig, 0, len(ic.Spec.Containers))
 	runtimeDetailsByContainer := ic.RuntimeDetailsByContainer()
 	podManifestInjectionOptional := true // pod manifest is optional, unless some container agent requires it
 
@@ -217,17 +225,23 @@ func updateInstrumentationConfigSpec(ctx context.Context, c client.Client, pw k8
 		// at this point, containerRuntimeDetails can be nil, indicating we have no runtime details for this container
 		// from automatic runtime detection or overrides.
 		containerOverride := ic.GetOverridesForContainer(containerName)
-		currentContainerConfig := calculateContainerInstrumentationConfig(containerName, effectiveConfig, containerRuntimeDetails, distroPerLanguage, distroProvider.Getter, rollbackOccurred, existingBackoffReason, cg, irls, containerOverride, agentLevelActions, workloadObj, pw)
+		currentContainerConfig := calculateContainerInstrumentationConfig(containerName, effectiveConfig, containerRuntimeDetails, distroPerLanguage, distroProvider.Getter, rollbackOccurred, existingBackoffReason, cg, irls, containerOverride, agentLevelActions, samplingRules, workloadObj, pw)
 		containersConfig = append(containersConfig, currentContainerConfig)
 		// if at least one container has agent enabled, and pod manifest injection is required,
 		// then the overall pod manifest injection is required.
 		if currentContainerConfig.AgentEnabled && !currentContainerConfig.PodManifestInjectionOptional {
 			podManifestInjectionOptional = false
 		}
+		// calculate the relevant collector configurations for the container.
+		currentContainerCollectorConfig := calculateContainerCollectorConfig(containerName, effectiveConfig, containerRuntimeDetails, distroPerLanguage, distroProvider.Getter, containerOverride, samplingRules, pw)
+		if currentContainerCollectorConfig != nil {
+			collectorConfig = append(collectorConfig, *currentContainerCollectorConfig)
+		}
 	}
+
 	ic.Spec.Containers = containersConfig
 	ic.Spec.PodManifestInjectionOptional = podManifestInjectionOptional
-
+	ic.Spec.WorkloadCollectorConfig = collectorConfig
 	// after updating the container configs, we can go over them and produce a useful aggregated status for the user
 	// if any container is instrumented, we can set the status to true
 	// if all containers are not instrumented, we can set the status to false and provide a reason
@@ -420,9 +434,8 @@ func getEnvInjectionDecision(
 }
 
 // filterUrlTemplateRulesForContainer filters template rules to only include those relevant to the container.
-// A rule group is applied if ALL set filters match (AND logic).
-// If no filters are set in a group, it's considered global and applies to all containers.
-func filterUrlTemplateRulesForContainer(agentLevelActions *[]odigosv1.Action, language common.ProgrammingLanguage, pw k8sconsts.PodWorkload) *odigosv1.UrlTemplatizationConfig {
+// A rule group is applied if its SourcesScope matches (empty scope = global, applies to all).
+func filterUrlTemplateRulesForContainer(agentLevelActions *[]odigosv1.Action, containerName string, language common.ProgrammingLanguage, pw k8sconsts.PodWorkload) *commonapi.UrlTemplatizationConfig {
 	var rules []string
 	participating := false
 
@@ -433,7 +446,7 @@ func filterUrlTemplateRulesForContainer(agentLevelActions *[]odigosv1.Action, la
 		}
 
 		for _, rulesGroup := range action.Spec.URLTemplatization.TemplatizationRulesGroups {
-			if templatizationRulesGroupMatchesContainer(rulesGroup, language, pw) {
+			if scope.AnySourceScopeMatchesContainer(rulesGroup.SourcesScope, pw, containerName, language) {
 				participating = true
 				for _, rule := range rulesGroup.TemplatizationRules {
 					rules = append(rules, rule.Template)
@@ -448,53 +461,52 @@ func filterUrlTemplateRulesForContainer(agentLevelActions *[]odigosv1.Action, la
 		return nil
 	}
 
-	return &odigosv1.UrlTemplatizationConfig{
-		Rules: rules,
+	return &commonapi.UrlTemplatizationConfig{
+		TemplatizationRules: rules,
 	}
 }
 
-func filterIgnoreHealthChecksForContainer(agentLevelActions *[]odigosv1.Action, language common.ProgrammingLanguage) []actionsv1.IgnoreHealthChecksConfig {
-	ignoredHealthChecksConfigs := []actionsv1.IgnoreHealthChecksConfig{}
-	for _, ignoreHealthCheck := range *agentLevelActions {
-		if ignoreHealthCheck.Spec.Samplers != nil && ignoreHealthCheck.Spec.Samplers.IgnoreHealthChecks != nil {
-			ignoredHealthChecksConfigs = append(ignoredHealthChecksConfigs, *ignoreHealthCheck.Spec.Samplers.IgnoreHealthChecks)
-		}
-	}
-	return ignoredHealthChecksConfigs
-}
+func calculateContainerCollectorConfig(containerName string,
+	effectiveConfig *common.OdigosConfiguration,
+	runtimeDetails *odigosv1.RuntimeDetailsByContainer,
+	distroPerLanguage map[common.ProgrammingLanguage]string,
+	distroGetter *distros.Getter,
+	containerOverride *odigosv1.ContainerOverride,
+	samplingRules *[]odigosv1.Sampling,
+	pw k8sconsts.PodWorkload,
+) *commonapi.ContainerCollectorConfig {
 
-// templatizationRulesGroupMatchesContainer checks if a rules group matches the container based on all set filters.
-// Returns true if all explicitly-set filters match (AND logic), or if no filters are set (global rule).
-func templatizationRulesGroupMatchesContainer(rulesGroup actions.UrlTemplatizationRulesGroup, language common.ProgrammingLanguage, pw k8sconsts.PodWorkload) bool {
-	// Filter by programming language
-	if rulesGroup.FilterProgrammingLanguage != nil {
-		if *rulesGroup.FilterProgrammingLanguage != language {
-			return false
-		}
+	// If this container is ignored, runtime details are unavailable, or language is not supported,
+	// we don't need to add any sampling rules for it.
+	if slices.Contains(effectiveConfig.IgnoredContainers, containerName) {
+		return nil
 	}
 
-	// Filter by k8s namespace
-	if rulesGroup.FilterK8sNamespace != "" {
-		if rulesGroup.FilterK8sNamespace != pw.Namespace {
-			return false
-		}
+	if runtimeDetails == nil {
+		return nil
 	}
 
-	// Filter by k8s workload kind
-	if rulesGroup.FilterK8sWorkloadKind != nil {
-		if *rulesGroup.FilterK8sWorkloadKind != pw.Kind {
-			return false
-		}
+	if runtimeDetails.Language == common.UnknownProgrammingLanguage {
+		return nil
 	}
 
-	// Filter by k8s workload name
-	if rulesGroup.FilterK8sWorkloadName != "" {
-		if rulesGroup.FilterK8sWorkloadName != pw.Name {
-			return false
-		}
+	containerDistro, err := resolveContainerDistro(containerName, containerOverride, runtimeDetails.Language, distroPerLanguage, distroGetter)
+	// This is not a real error but a containerAgentConfig pointer with the appropriate reason and message for the failure.
+	// In this case, we are not updating the ContainerAgentConfig so we can continue with the next container.
+	if err != nil {
+		return nil
 	}
 
-	return true
+	noisyOps, relevantOps, costRules := sampling.FilterTailSamplingRulesForContainer(samplingRules, runtimeDetails.Language, pw, containerName, containerDistro)
+
+	return &commonapi.ContainerCollectorConfig{
+		ContainerName: containerName,
+		TailSampling: &commonapi.SamplingCollectorConfig{
+			NoisyOperations:          noisyOps,
+			HighlyRelevantOperations: relevantOps,
+			CostReductionRules:       costRules,
+		},
+	}
 }
 
 func calculateContainerInstrumentationConfig(containerName string,
@@ -508,6 +520,7 @@ func calculateContainerInstrumentationConfig(containerName string,
 	irls *[]odigosv1.InstrumentationRule,
 	containerOverride *odigosv1.ContainerOverride,
 	agentLevelActions *[]odigosv1.Action,
+	samplingRules *[]odigosv1.Sampling,
 	workloadObj workload.Workload,
 	pw k8sconsts.PodWorkload,
 ) odigosv1.ContainerAgentConfig {
@@ -540,8 +553,7 @@ func calculateContainerInstrumentationConfig(containerName string,
 		}
 	}
 
-	filteredTemplateRules := filterUrlTemplateRulesForContainer(agentLevelActions, runtimeDetails.Language, pw)
-	ignoreHealthChecks := filterIgnoreHealthChecksForContainer(agentLevelActions, runtimeDetails.Language)
+	filteredTemplateRules := filterUrlTemplateRulesForContainer(agentLevelActions, containerName, runtimeDetails.Language, pw)
 
 	d, err := resolveContainerDistro(containerName, containerOverride, runtimeDetails.Language, distroPerLanguage, distroGetter)
 	if err != nil {
@@ -552,7 +564,7 @@ func calculateContainerInstrumentationConfig(containerName string,
 	tracesEnabled, metricsEnabled, logsEnabled := signalconfig.GetEnabledSignalsForContainer(nodeCollectorsGroup, irls)
 
 	// at this time, we don't populate the signals specific configs, but we will do it soon
-	tracesConfig, err := signalconfig.CalculateTracesConfig(tracesEnabled, effectiveConfig, containerName, runtimeDetails.Language, filteredTemplateRules, ignoreHealthChecks, irls, agentLevelActions, workloadObj, d)
+	tracesConfig, err := signalconfig.CalculateTracesConfig(tracesEnabled, effectiveConfig, containerName, runtimeDetails.Language, filteredTemplateRules, irls, agentLevelActions, samplingRules, workloadObj, pw, d)
 	if err != nil {
 		return *err
 	}

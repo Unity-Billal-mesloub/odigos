@@ -15,9 +15,47 @@ import (
 	"github.com/odigos-io/odigos/frontend/graph/loaders"
 	"github.com/odigos-io/odigos/frontend/graph/model"
 	"github.com/odigos-io/odigos/frontend/graph/status"
+	"github.com/odigos-io/odigos/frontend/services"
 	frontendcommon "github.com/odigos-io/odigos/frontend/services/common"
 	sourceutils "github.com/odigos-io/odigos/k8sutils/pkg/source"
 )
+
+// MarkedForInstrumentation is the resolver for the markedForInstrumentation field.
+func (r *k8sNamespaceResolver) MarkedForInstrumentation(ctx context.Context, obj *model.K8sNamespace) (bool, error) {
+	l := loaders.For(ctx)
+	source, err := l.GetNamespaceSource(ctx, obj.Name)
+	if err != nil {
+		return false, err
+	}
+
+	// if there is no ns source - the namespace is not marked for instrumentation.
+	if source == nil {
+		return false, nil
+	}
+
+	// if the ns source is disabling instrumentation - the namespace is not marked for instrumentation.
+	if source.Spec.DisableInstrumentation {
+		return false, nil
+	}
+
+	return true, nil
+}
+
+// DataStreamNames is the resolver for the dataStreamNames field.
+func (r *k8sNamespaceResolver) DataStreamNames(ctx context.Context, obj *model.K8sNamespace) ([]string, error) {
+	l := loaders.For(ctx)
+	nsSource, err := l.GetNamespaceSource(ctx, obj.Name)
+	if err != nil {
+		return []string{}, err
+	}
+
+	ptrNames := services.ExtractDataStreamsFromSource(nsSource, nil)
+	names := make([]string, len(ptrNames))
+	for i, p := range ptrNames {
+		names[i] = *p
+	}
+	return names, nil
+}
 
 // ServiceName is the resolver for the serviceName field.
 func (r *k8sWorkloadResolver) ServiceName(ctx context.Context, obj *model.K8sWorkload) (*string, error) {
@@ -264,13 +302,15 @@ func (r *k8sWorkloadResolver) Containers(ctx context.Context, obj *model.K8sWork
 	}
 
 	containerByName := make(map[string]*model.K8sWorkloadContainer)
-	for _, container := range ic.Spec.Containers {
+	for i := range ic.Spec.Containers {
+		container := &ic.Spec.Containers[i]
 		if _, ok := containerByName[container.ContainerName]; !ok {
 			containerByName[container.ContainerName] = &model.K8sWorkloadContainer{
 				ContainerName: container.ContainerName,
 			}
 		}
-		containerByName[container.ContainerName].AgentEnabled = agentEnabledContainersToModel(&container)
+		containerByName[container.ContainerName].AgentEnabled = agentEnabledContainersToModel(container)
+		containerByName[container.ContainerName].AgentConfig = containerAgentConfigToAgentConfigModel(container)
 	}
 
 	for _, container := range ic.Status.RuntimeDetailsByContainer {
@@ -519,6 +559,46 @@ func (r *k8sWorkloadResolver) TelemetryMetrics(ctx context.Context, obj *model.K
 	}, nil
 }
 
+// DataStreamNames is the resolver for the dataStreamNames field.
+func (r *k8sWorkloadResolver) DataStreamNames(ctx context.Context, obj *model.K8sWorkload) ([]string, error) {
+	l := loaders.For(ctx)
+	sources, err := l.GetSources(ctx, *obj.ID)
+	if err != nil {
+		return []string{}, err
+	}
+
+	ptrNames := services.ExtractDataStreamsFromSource(sources.Workload, sources.Namespace)
+	names := make([]string, len(ptrNames))
+	for i, p := range ptrNames {
+		names[i] = *p
+	}
+	return names, nil
+}
+
+// NumberOfInstances is the resolver for the numberOfInstances field.
+func (r *k8sWorkloadResolver) NumberOfInstances(ctx context.Context, obj *model.K8sWorkload) (*int, error) {
+	l := loaders.For(ctx)
+	workloadManifest, err := l.GetWorkloadManifest(ctx, *obj.ID)
+	if err != nil {
+		return nil, err
+	}
+	count := int(workloadManifest.AvailableReplicas)
+	return &count, nil
+}
+
+// RollbackOccurred is the resolver for the rollbackOccurred field.
+func (r *k8sWorkloadResolver) RollbackOccurred(ctx context.Context, obj *model.K8sWorkload) (bool, error) {
+	l := loaders.For(ctx)
+	ic, err := l.GetInstrumentationConfig(ctx, *obj.ID)
+	if err != nil {
+		return false, err
+	}
+	if ic == nil {
+		return false, nil
+	}
+	return ic.Status.RollbackOccurred, nil
+}
+
 // Processes is the resolver for the processes field.
 func (r *k8sWorkloadPodContainerResolver) Processes(ctx context.Context, obj *model.K8sWorkloadPodContainer) ([]*model.K8sWorkloadPodContainerProcess, error) {
 	l := loaders.For(ctx)
@@ -625,6 +705,55 @@ func (r *k8sWorkloadTelemetryMetricsResolver) ExpectingTelemetry(ctx context.Con
 	return status.CalculateExpectingTelemetryStatus(ic, pods, obj.TotalDataSentBytes), nil
 }
 
+// Workloads is the resolver for the workloads field.
+func (r *queryResolver) Workloads(ctx context.Context, filter *model.WorkloadFilter) ([]*model.K8sWorkload, error) {
+	l := loaders.For(ctx)
+	err := l.SetFilters(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+	sources := make([]*model.K8sWorkload, 0)
+	for _, sourceId := range l.GetWorkloadIds() {
+		sources = append(sources, &model.K8sWorkload{
+			ID: &sourceId,
+		})
+	}
+	return sources, nil
+}
+
+// Namespaces is the resolver for the namespaces field.
+func (r *queryResolver) Namespaces(ctx context.Context) ([]*model.K8sNamespace, error) {
+	l := loaders.For(ctx)
+	err := l.SetFilters(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	nss, err := l.GetNamespaces(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	gqlNss := make([]*model.K8sNamespace, 0, len(nss))
+	for _, nsName := range nss {
+		workloadIds := l.GetWorkloadIdsInNamespace(nsName)
+		workloads := make([]*model.K8sWorkload, 0, len(workloadIds))
+		for _, workloadId := range workloadIds {
+			workloads = append(workloads, &model.K8sWorkload{
+				ID: &workloadId,
+			})
+		}
+		gqlNss = append(gqlNss, &model.K8sNamespace{
+			Name:      nsName,
+			Workloads: workloads,
+		})
+	}
+	return gqlNss, nil
+}
+
+// K8sNamespace returns K8sNamespaceResolver implementation.
+func (r *Resolver) K8sNamespace() K8sNamespaceResolver { return &k8sNamespaceResolver{r} }
+
 // K8sWorkload returns K8sWorkloadResolver implementation.
 func (r *Resolver) K8sWorkload() K8sWorkloadResolver { return &k8sWorkloadResolver{r} }
 
@@ -638,6 +767,7 @@ func (r *Resolver) K8sWorkloadTelemetryMetrics() K8sWorkloadTelemetryMetricsReso
 	return &k8sWorkloadTelemetryMetricsResolver{r}
 }
 
+type k8sNamespaceResolver struct{ *Resolver }
 type k8sWorkloadResolver struct{ *Resolver }
 type k8sWorkloadPodContainerResolver struct{ *Resolver }
 type k8sWorkloadTelemetryMetricsResolver struct{ *Resolver }
